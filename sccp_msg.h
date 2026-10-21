@@ -483,7 +483,11 @@ struct button_definition {
 	uint8_t buttonDefinition;
 };
 
-#define MAX_BUTTON_DEFINITION 42
+/* 56 buttons are needed for a 7975 with two 24 buttons key expansion modules; the
+ * message is still sent with 42 buttons when that's enough, as before
+ */
+#define MAX_BUTTON_DEFINITION 56
+#define LEGACY_MAX_BUTTON_DEFINITION 42
 struct button_template_res_message {
 	uint32_t buttonOffset;
 	uint32_t buttonCount;

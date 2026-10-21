@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <stddef.h>
 #include <iconv.h>
 #include <strings.h>
 
@@ -156,15 +157,20 @@ static void prepare_msg(struct sccp_msg *msg, uint32_t data_length, uint32_t msg
 
 void sccp_msg_button_template_res(struct sccp_msg *msg, struct button_definition *definition, size_t n)
 {
+	size_t max_definition = n > LEGACY_MAX_BUTTON_DEFINITION ? MAX_BUTTON_DEFINITION : LEGACY_MAX_BUTTON_DEFINITION;
 	size_t i;
 
-	prepare_msg(msg, sizeof(struct button_template_res_message), BUTTON_TEMPLATE_RES_MESSAGE);
+	if (n > MAX_BUTTON_DEFINITION) {
+		n = MAX_BUTTON_DEFINITION;
+	}
+
+	prepare_msg(msg, offsetof(struct button_template_res_message, definition) + max_definition * sizeof(struct button_definition), BUTTON_TEMPLATE_RES_MESSAGE);
 
 	for (i = 0; i < n; i++) {
 		msg->data.buttontemplate.definition[i] = definition[i];
 	}
 
-	for (; i < MAX_BUTTON_DEFINITION; i++) {
+	for (; i < max_definition; i++) {
 		msg->data.buttontemplate.definition[i].buttonDefinition = BT_NONE;
 		msg->data.buttontemplate.definition[i].lineInstance = 0;
 	}
