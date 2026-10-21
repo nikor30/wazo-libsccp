@@ -11,6 +11,7 @@
 #define DEVICE_CFG_NAME_GUEST "guest"
 
 static void sccp_device_cfg_free_internal(struct sccp_device_cfg *device_cfg);
+static void sccp_device_cfg_free_lines(struct sccp_device_cfg *device_cfg);
 static void sccp_device_cfg_free_speeddials(struct sccp_device_cfg *device_cfg);
 static void sccp_line_cfg_free_internal(struct sccp_line_cfg *line_cfg);
 static void sccp_general_cfg_free_internal(struct sccp_general_cfg *general_cfg);
@@ -22,8 +23,13 @@ struct sccp_general_cfg_internal {
 };
 
 struct sccp_device_cfg_internal {
-	char line_name[SCCP_LINE_NAME_MAX];
+	AST_LIST_HEAD_NOLOCK(, device_cfg_line) lines;
 	AST_LIST_HEAD_NOLOCK(, device_cfg_speeddial) speeddials;
+};
+
+struct device_cfg_line {
+	char name[SCCP_LINE_NAME_MAX];
+	AST_LIST_ENTRY(device_cfg_line) list;
 };
 
 struct device_cfg_speeddial {
@@ -178,8 +184,8 @@ static void sccp_device_cfg_destructor(void *obj)
 	struct sccp_device_cfg *device_cfg = obj;
 
 	sccp_device_cfg_free_internal(device_cfg);
+	sccp_device_cfg_free_lines(device_cfg);
 	sccp_device_cfg_free_speeddials(device_cfg);
-	ao2_cleanup(device_cfg->line_cfg);
 }
 
 static void *sccp_device_cfg_alloc(const char *category)
@@ -199,15 +205,33 @@ static void *sccp_device_cfg_alloc(const char *category)
 	}
 
 	ast_copy_string(device_cfg->name, category, sizeof(device_cfg->name));
-	device_cfg->line_cfg = NULL;
 	device_cfg->guest = 0;
+	device_cfg->line_count = 0;
+	device_cfg->lines_cfg = NULL;
 	device_cfg->speeddial_count = 0;
 	device_cfg->speeddials_cfg = NULL;
 	device_cfg->internal = internal;
-	device_cfg->internal->line_name[0] = '\0';
+	AST_LIST_HEAD_INIT_NOLOCK(&device_cfg->internal->lines);
 	AST_LIST_HEAD_INIT_NOLOCK(&device_cfg->internal->speeddials);
 
 	return device_cfg;
+}
+
+static void sccp_device_cfg_free_lines(struct sccp_device_cfg *device_cfg)
+{
+	size_t i;
+
+	if (!device_cfg->lines_cfg) {
+		return;
+	}
+
+	for (i = 0; i < device_cfg->line_count; i++) {
+		ao2_ref(device_cfg->lines_cfg[i], -1);
+	}
+
+	ast_free(device_cfg->lines_cfg);
+	device_cfg->lines_cfg = NULL;
+	device_cfg->line_count = 0;
 }
 
 static void sccp_device_cfg_free_speeddials(struct sccp_device_cfg *device_cfg)
@@ -228,11 +252,18 @@ static void sccp_device_cfg_free_speeddials(struct sccp_device_cfg *device_cfg)
 
 static void sccp_device_cfg_free_internal(struct sccp_device_cfg *device_cfg)
 {
+	struct device_cfg_line *device_line;
 	struct device_cfg_speeddial *device_sd;
 
 	if (!device_cfg->internal) {
 		return;
 	}
+
+	AST_LIST_TRAVERSE_SAFE_BEGIN(&device_cfg->internal->lines, device_line, list) {
+		AST_LIST_REMOVE_CURRENT(list);
+		ast_free(device_line);
+	}
+	AST_LIST_TRAVERSE_SAFE_END;
 
 	AST_LIST_TRAVERSE_SAFE_BEGIN(&device_cfg->internal->speeddials, device_sd, list) {
 		AST_LIST_REMOVE_CURRENT(list);
@@ -242,6 +273,32 @@ static void sccp_device_cfg_free_internal(struct sccp_device_cfg *device_cfg)
 
 	ast_free(device_cfg->internal);
 	device_cfg->internal = NULL;
+}
+
+/*
+ * The "internal" member must not have been freed.
+ */
+static int sccp_device_cfg_add_line_name(struct sccp_device_cfg *device_cfg, const char *name)
+{
+	struct device_cfg_line *device_line;
+
+	AST_LIST_TRAVERSE(&device_cfg->internal->lines, device_line, list) {
+		if (!strcmp(device_line->name, name)) {
+			ast_log(LOG_WARNING, "device %s: ignoring duplicate line %s\n", device_cfg->name, name);
+			return 0;
+		}
+	}
+
+	device_line = ast_calloc(1, sizeof(*device_line));
+	if (!device_line) {
+		return -1;
+	}
+
+	ast_copy_string(device_line->name, name, sizeof(device_line->name));
+
+	AST_LIST_INSERT_TAIL(&device_cfg->internal->lines, device_line, list);
+
+	return 0;
 }
 
 /*
@@ -266,31 +323,65 @@ static int sccp_device_cfg_add_speeddial_name(struct sccp_device_cfg *device_cfg
 
 /*
  * The "internal" member must not have been freed.
+ */
+static void sccp_device_cfg_release_lines(struct sccp_device_cfg *device_cfg)
+{
+	size_t i;
+
+	for (i = 0; i < device_cfg->line_count; i++) {
+		device_cfg->lines_cfg[i]->internal->associated = 0;
+	}
+
+	sccp_device_cfg_free_lines(device_cfg);
+}
+
+/*
+ * The "internal" member must not have been freed.
  * The function must not have been called successfully for this device config
  */
-static int sccp_device_cfg_build_line(struct sccp_device_cfg *device_cfg, struct sccp_cfg *cfg)
+static int sccp_device_cfg_build_lines(struct sccp_device_cfg *device_cfg, struct sccp_cfg *cfg)
 {
+	struct device_cfg_line *device_line;
 	struct sccp_line_cfg *line_cfg;
+	size_t count = 0;
 
-	if (ast_strlen_zero(device_cfg->internal->line_name)) {
+	AST_LIST_TRAVERSE(&device_cfg->internal->lines, device_line, list) {
+		count++;
+	}
+
+	if (!count) {
 		ast_log(LOG_ERROR, "invalid device %s: no line associated\n", device_cfg->name);
 		return -1;
 	}
 
-	line_cfg = sccp_cfg_find_line(cfg, device_cfg->internal->line_name);
-	if (!line_cfg) {
-		ast_log(LOG_ERROR, "invalid device %s: unknown line %s\n", device_cfg->name, device_cfg->internal->line_name);
+	if (count > SCCP_DEVICE_MAX_LINES) {
+		ast_log(LOG_ERROR, "invalid device %s: too many lines (%zu > %d)\n", device_cfg->name, count, SCCP_DEVICE_MAX_LINES);
 		return -1;
 	}
 
-	if (line_cfg->internal->associated) {
-		ast_log(LOG_ERROR, "invalid device %s: line %s is already associated\n", device_cfg->name, line_cfg->name);
-		ao2_ref(line_cfg, -1);
+	device_cfg->lines_cfg = ast_calloc(count, sizeof(*device_cfg->lines_cfg));
+	if (!device_cfg->lines_cfg) {
 		return -1;
 	}
 
-	device_cfg->line_cfg = line_cfg;
-	line_cfg->internal->associated = 1;
+	AST_LIST_TRAVERSE(&device_cfg->internal->lines, device_line, list) {
+		line_cfg = sccp_cfg_find_line(cfg, device_line->name);
+		if (!line_cfg) {
+			ast_log(LOG_ERROR, "invalid device %s: unknown line %s\n", device_cfg->name, device_line->name);
+			sccp_device_cfg_release_lines(device_cfg);
+			return -1;
+		}
+
+		if (line_cfg->internal->associated) {
+			ast_log(LOG_ERROR, "invalid device %s: line %s is already associated\n", device_cfg->name, line_cfg->name);
+			ao2_ref(line_cfg, -1);
+			sccp_device_cfg_release_lines(device_cfg);
+			return -1;
+		}
+
+		line_cfg->internal->associated = 1;
+		device_cfg->lines_cfg[device_cfg->line_count++] = line_cfg;
+	}
 
 	return 0;
 }
@@ -356,7 +447,7 @@ static void sccp_device_cfg_norm_voicemail(struct sccp_device_cfg *device_cfg)
 	}
 
 	strcpy(buf, device_cfg->voicemail);
-	snprintf(device_cfg->voicemail, sizeof(device_cfg->voicemail), "%s@%s", buf, device_cfg->line_cfg->context);
+	snprintf(device_cfg->voicemail, sizeof(device_cfg->voicemail), "%s@%s", buf, device_cfg->lines_cfg[0]->context);
 }
 
 static int sccp_device_cfg_hash(const void *obj, int flags)
@@ -566,11 +657,12 @@ static int cb_pre_apply_device_cfg(void *obj, void *arg, int flags)
 	struct sccp_device_cfg *device_cfg = obj;
 	struct sccp_cfg *cfg = arg;
 
-	if (sccp_device_cfg_build_line(device_cfg, cfg)) {
+	if (sccp_device_cfg_build_lines(device_cfg, cfg)) {
 		return CMP_MATCH;
 	}
 
 	if (sccp_device_cfg_build_speeddials(device_cfg, cfg)) {
+		sccp_device_cfg_release_lines(device_cfg);
 		return CMP_MATCH;
 	}
 
@@ -608,12 +700,15 @@ static void pre_apply_general_cfg(struct sccp_cfg *cfg)
 {
 	struct sccp_general_cfg *general_cfg = cfg->general_cfg;
 	struct sccp_device_cfg *device_cfg;
+	size_t i;
 
 	device_cfg = sccp_cfg_find_device(cfg, DEVICE_CFG_NAME_GUEST);
 	if (device_cfg) {
-		/* unlink the guest device and its line */
+		/* unlink the guest device and its lines */
 		ao2_unlink(cfg->devices_cfg, device_cfg);
-		ao2_unlink(cfg->lines_cfg, device_cfg->line_cfg);
+		for (i = 0; i < device_cfg->line_count; i++) {
+			ao2_unlink(cfg->lines_cfg, device_cfg->lines_cfg[i]);
+		}
 
 		if (general_cfg->internal->guest) {
 			general_cfg->guest_device_cfg = device_cfg;
@@ -661,9 +756,7 @@ static int device_cfg_line_handler(const struct aco_option *opt, struct ast_vari
 {
 	struct sccp_device_cfg *device_cfg = obj;
 
-	ast_copy_string(device_cfg->internal->line_name, var->value, sizeof(device_cfg->internal->line_name));
-
-	return 0;
+	return sccp_device_cfg_add_line_name(device_cfg, var->value);
 }
 
 static int device_cfg_speeddial_handler(const struct aco_option *opt, struct ast_variable *var, void *obj)

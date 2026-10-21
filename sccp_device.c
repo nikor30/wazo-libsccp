@@ -112,12 +112,10 @@ struct sccp_line {
 	char name[SCCP_LINE_NAME_MAX];
 };
 
-/* limited to exactly 1 line for now, but is the way on to the support of multiple lines,
- * and more important, it offers symmetry with speeddial_group, so there's only one system
- * to understand
- */
 struct sccp_lines {
-	struct sccp_line *line;
+	/* const */
+	struct sccp_line **arr;
+	/* const */
 	size_t count;
 };
 
@@ -1092,22 +1090,44 @@ static struct sccp_subchannel *sccp_line_new_subchannel(struct sccp_line *line, 
 
 static int sccp_lines_init(struct sccp_lines *lines, struct sccp_device *device, uint32_t instance)
 {
-	struct sccp_line *line;
+	struct sccp_device_cfg *device_cfg = device->cfg;
+	size_t i;
 
-	line = sccp_line_alloc(device->cfg->line_cfg, device, instance);
-	if (!line) {
+	lines->arr = ast_calloc(device_cfg->line_count, sizeof(*lines->arr));
+	if (!lines->arr) {
 		return -1;
 	}
 
-	lines->line = line;
-	lines->count = 1;
+	for (i = 0; i < device_cfg->line_count; i++) {
+		lines->arr[i] = sccp_line_alloc(device_cfg->lines_cfg[i], device, instance + i);
+		if (!lines->arr[i]) {
+			goto error;
+		}
+	}
+
+	lines->count = device_cfg->line_count;
 
 	return 0;
+
+error:
+	while (i--) {
+		ao2_ref(lines->arr[i], -1);
+	}
+
+	ast_free(lines->arr);
+
+	return -1;
 }
 
 static void sccp_lines_deinit(struct sccp_lines *lines)
 {
-	ao2_ref(lines->line, -1);
+	size_t i;
+
+	for (i = 0; i < lines->count; i++) {
+		ao2_ref(lines->arr[i], -1);
+	}
+
+	ast_free(lines->arr);
 }
 
 /*
@@ -1115,7 +1135,11 @@ static void sccp_lines_deinit(struct sccp_lines *lines)
  */
 static void sccp_lines_destroy(struct sccp_lines *lines)
 {
-	sccp_line_destroy(lines->line);
+	size_t i;
+
+	for (i = 0; i < lines->count; i++) {
+		sccp_line_destroy(lines->arr[i]);
+	}
 }
 
 /*
@@ -1123,7 +1147,11 @@ static void sccp_lines_destroy(struct sccp_lines *lines)
  */
 static void sccp_lines_on_registration_success(struct sccp_lines *lines)
 {
-	sccp_line_update_devstate(lines->line, AST_DEVICE_NOT_INUSE);
+	size_t i;
+
+	for (i = 0; i < lines->count; i++) {
+		sccp_line_update_devstate(lines->arr[i], AST_DEVICE_NOT_INUSE);
+	}
 }
 
 /*
@@ -1131,10 +1159,12 @@ static void sccp_lines_on_registration_success(struct sccp_lines *lines)
  */
 static struct sccp_line *sccp_lines_get_by_instance(struct sccp_lines *lines, uint32_t instance)
 {
-	struct sccp_line *line = lines->line;
+	size_t i;
 
-	if (line->instance == instance) {
-		return line;
+	for (i = 0; i < lines->count; i++) {
+		if (lines->arr[i]->instance == instance) {
+			return lines->arr[i];
+		}
 	}
 
 	return NULL;
@@ -1145,7 +1175,24 @@ static struct sccp_line *sccp_lines_get_by_instance(struct sccp_lines *lines, ui
  */
 static struct sccp_line *sccp_lines_get_default(struct sccp_lines *lines)
 {
-	return lines->line;
+	return lines->arr[0];
+}
+
+/*
+ * Return the line with the given instance, or the default line if the instance
+ * is 0 (i.e. not specified by the device) or unknown.
+ *
+ * \note reference count is NOT incremented
+ */
+static struct sccp_line *sccp_lines_get_by_instance_or_default(struct sccp_lines *lines, uint32_t instance)
+{
+	struct sccp_line *line = NULL;
+
+	if (instance) {
+		line = sccp_lines_get_by_instance(lines, instance);
+	}
+
+	return line ? line : sccp_lines_get_default(lines);
 }
 
 /*
@@ -1154,9 +1201,28 @@ static struct sccp_line *sccp_lines_get_default(struct sccp_lines *lines)
 static struct sccp_subchannel *sccp_lines_get_subchan(struct sccp_lines *lines, uint32_t subchan_id)
 {
 	struct sccp_subchannel *subchan;
+	size_t i;
 
-	AST_LIST_TRAVERSE(&lines->line->subchans, subchan, list) {
-		if (subchan->id == subchan_id) {
+	for (i = 0; i < lines->count; i++) {
+		AST_LIST_TRAVERSE(&lines->arr[i]->subchans, subchan, list) {
+			if (subchan->id == subchan_id) {
+				return subchan;
+			}
+		}
+	}
+
+	return NULL;
+}
+
+/*
+ * \note reference count is NOT incremented
+ */
+static struct sccp_subchannel *sccp_line_get_next_subchan(struct sccp_line *line, enum sccp_state state)
+{
+	struct sccp_subchannel *subchan;
+
+	AST_LIST_TRAVERSE(&line->subchans, subchan, list) {
+		if (subchan->state == state) {
 			return subchan;
 		}
 	}
@@ -1170,9 +1236,11 @@ static struct sccp_subchannel *sccp_lines_get_subchan(struct sccp_lines *lines, 
 static struct sccp_subchannel *sccp_lines_get_next_subchan(struct sccp_lines *lines, enum sccp_state state)
 {
 	struct sccp_subchannel *subchan;
+	size_t i;
 
-	AST_LIST_TRAVERSE(&lines->line->subchans, subchan, list) {
-		if (subchan->state == state) {
+	for (i = 0; i < lines->count; i++) {
+		subchan = sccp_line_get_next_subchan(lines->arr[i], state);
+		if (subchan) {
 			return subchan;
 		}
 	}
@@ -1197,14 +1265,19 @@ static struct sccp_subchannel *sccp_lines_get_next_offhook_subchan(struct sccp_l
 
 static int sccp_lines_has_subchans(struct sccp_lines *lines)
 {
-	return !AST_LIST_EMPTY(&lines->line->subchans);
+	size_t i;
+
+	for (i = 0; i < lines->count; i++) {
+		if (!AST_LIST_EMPTY(&lines->arr[i]->subchans)) {
+			return 1;
+		}
+	}
+
+	return 0;
 }
 
-static int sccp_lines_test_apply_config(struct sccp_lines *lines, struct sccp_device_cfg *new_device_cfg)
+static int sccp_line_test_apply_config(struct sccp_line_cfg *old_line_cfg, struct sccp_line_cfg *new_line_cfg)
 {
-	struct sccp_line_cfg *new_line_cfg = new_device_cfg->line_cfg;
-	struct sccp_line_cfg *old_line_cfg = lines->line->cfg;
-
 	if (strcmp(old_line_cfg->name, new_line_cfg->name)) {
 		return 0;
 	}
@@ -1225,13 +1298,34 @@ static int sccp_lines_test_apply_config(struct sccp_lines *lines, struct sccp_de
 	return 1;
 }
 
+static int sccp_lines_test_apply_config(struct sccp_lines *lines, struct sccp_device_cfg *new_device_cfg)
+{
+	size_t i;
+
+	if (lines->count != new_device_cfg->line_count) {
+		return 0;
+	}
+
+	for (i = 0; i < lines->count; i++) {
+		if (!sccp_line_test_apply_config(lines->arr[i]->cfg, new_device_cfg->lines_cfg[i])) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 static void sccp_lines_apply_config(struct sccp_lines *lines, struct sccp_device_cfg *new_device_cfg)
 {
-	struct sccp_line *line = lines->line;
+	struct sccp_line *line;
+	size_t i;
 
-	ao2_ref(line->cfg, -1);
-	line->cfg = new_device_cfg->line_cfg;
-	ao2_ref(line->cfg, +1);
+	for (i = 0; i < lines->count; i++) {
+		line = lines->arr[i];
+		ao2_ref(line->cfg, -1);
+		line->cfg = new_device_cfg->lines_cfg[i];
+		ao2_ref(line->cfg, +1);
+	}
 }
 
 static void sccp_device_destructor(void *data)
@@ -1484,10 +1578,12 @@ static void transmit_button_template_res(struct sccp_device *device)
 	size_t n = 0;
 	size_t i;
 
-	/* add the line */
-	definition[n].buttonDefinition = BT_LINE;
-	definition[n].lineInstance = device->lines.line->instance;
-	n++;
+	/* add the lines */
+	for (i = 0; i < device->lines.count && n < MAX_BUTTON_DEFINITION; i++) {
+		definition[n].buttonDefinition = BT_LINE;
+		definition[n].lineInstance = device->lines.arr[i]->instance;
+		n++;
+	}
 
 	/* add the speeddials */
 	for (i = 0; i < device->speeddials.count && n < MAX_BUTTON_DEFINITION; i++) {
@@ -2037,9 +2133,10 @@ static int do_resume(struct sccp_device *device, struct sccp_subchannel *subchan
 	return 0;
 }
 
-static struct sccp_subchannel *do_newcall_options(struct sccp_device *device, enum option_flags options)
+static int do_hangup(struct sccp_device *device, struct sccp_subchannel *subchan);
+
+static struct sccp_subchannel *do_newcall_options(struct sccp_device *device, struct sccp_line *line, enum option_flags options)
 {
-	struct sccp_line *line = sccp_lines_get_default(&device->lines);
 	struct sccp_subchannel *subchan;
 
 	if (sccp_lines_get_next_ringout_subchan(&device->lines)) {
@@ -2049,8 +2146,14 @@ static struct sccp_subchannel *do_newcall_options(struct sccp_device *device, en
 
 	subchan = sccp_lines_get_next_offhook_subchan(&device->lines);
 	if (subchan) {
-		ast_debug(1, "Found an already offhook subchan; reusing it\n");
-		return subchan;
+		if (subchan->line == line) {
+			ast_debug(1, "Found an already offhook subchan; reusing it\n");
+			return subchan;
+		}
+
+		/* the user switched line while dialing; drop the subchan on the other line */
+		ast_debug(1, "Found an already offhook subchan on line %s; clearing it\n", subchan->line->name);
+		do_hangup(device, subchan);
 	}
 
 	if (device->active_subchan) {
@@ -2080,9 +2183,9 @@ static struct sccp_subchannel *do_newcall_options(struct sccp_device *device, en
 	return subchan;
 }
 
-static inline struct sccp_subchannel *do_newcall(struct sccp_device *device)
+static inline struct sccp_subchannel *do_newcall(struct sccp_device *device, struct sccp_line *line)
 {
-	return do_newcall_options(device, 0);
+	return do_newcall_options(device, line, 0);
 }
 
 static void do_clear_subchannel(struct sccp_device *device, struct sccp_subchannel *subchan)
@@ -2118,8 +2221,12 @@ static void do_clear_subchannel(struct sccp_device *device, struct sccp_subchann
 	/* the ref is decremented at the end of the function */
 	AST_LIST_REMOVE(&line->subchans, subchan, list);
 	if (AST_LIST_EMPTY(&line->subchans)) {
-		transmit_speaker_mode(device, SCCP_SPEAKEROFF);
+		transmit_line_lamp_state(device, line, SCCP_LAMP_OFF);
 		sccp_line_update_devstate(line, AST_DEVICE_NOT_INUSE);
+	}
+
+	if (!sccp_lines_has_subchans(&device->lines)) {
+		transmit_speaker_mode(device, SCCP_SPEAKEROFF);
 	}
 
 	if (subchan == device->active_subchan) {
@@ -2298,6 +2405,20 @@ static int start_the_call(struct sccp_device *device, struct sccp_subchannel *su
 	return 0;
 }
 
+/*
+ * Return the line of the active subchan, or the default line if there's no active subchan.
+ *
+ * \note reference count is NOT incremented
+ */
+static struct sccp_line *sccp_device_get_current_line(struct sccp_device *device)
+{
+	if (device->active_subchan) {
+		return device->active_subchan->line;
+	}
+
+	return sccp_lines_get_default(&device->lines);
+}
+
 static void do_speeddial_action(struct sccp_device *device, struct sccp_speeddial *sd)
 {
 	struct sccp_subchannel *subchan;
@@ -2306,7 +2427,7 @@ static void do_speeddial_action(struct sccp_device *device, struct sccp_speeddia
 		set_callforward(device, sd->cfg->extension);
 	} else {
 		/* XXX this 3 steps stuff should be simplified into one function */
-		subchan = do_newcall_options(device, OPT_SPEAKER_ON);
+		subchan = do_newcall_options(device, sccp_device_get_current_line(device), OPT_SPEAKER_ON);
 		if (!subchan) {
 			return;
 		}
@@ -2491,13 +2612,17 @@ static void handle_msg_onhook(struct sccp_device *device, struct sccp_msg *msg)
 static void handle_msg_offhook(struct sccp_device *device, struct sccp_msg *msg)
 {
 	struct sccp_subchannel *subchan;
+	uint32_t line_instance;
 	uint32_t subchan_id;
 
 	if (device->proto_version >= 11) {
-		if (!msg->data.offhook.lineInstance) {
-			do_newcall(device);
+		line_instance = letohl(msg->data.offhook.lineInstance);
+		subchan_id = letohl(msg->data.offhook.callInstance);
+		if (!line_instance) {
+			do_newcall(device, sccp_lines_get_default(&device->lines));
+		} else if (!subchan_id) {
+			do_newcall(device, sccp_lines_get_by_instance_or_default(&device->lines, line_instance));
 		} else {
-			subchan_id = letohl(msg->data.offhook.callInstance);
 			subchan = sccp_lines_get_subchan(&device->lines, subchan_id);
 			if (!subchan) {
 				ast_log(LOG_NOTICE, "handle msg offhook failed: no subchan %u\n", subchan_id);
@@ -2511,7 +2636,7 @@ static void handle_msg_offhook(struct sccp_device *device, struct sccp_msg *msg)
 		if (subchan) {
 			do_answer(device, subchan);
 		} else if (!device->active_subchan) {
-			do_newcall(device);
+			do_newcall(device, sccp_lines_get_default(&device->lines));
 		}
 	}
 }
@@ -2682,18 +2807,21 @@ static void handle_softkey_hold(struct sccp_device *device)
 	do_hold(device);
 }
 
-static void handle_softkey_newcall(struct sccp_device *device)
+static void handle_softkey_newcall(struct sccp_device *device, uint32_t line_instance)
 {
-	do_newcall_options(device, OPT_SPEAKER_ON);
+	struct sccp_line *line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
+
+	do_newcall_options(device, line, OPT_SPEAKER_ON);
 }
 
-static void handle_softkey_redial(struct sccp_device *device)
+static void handle_softkey_redial(struct sccp_device *device, uint32_t line_instance)
 {
+	struct sccp_line *line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
 	struct sccp_subchannel *subchan;
 
 	if (!ast_strlen_zero(device->last_exten)) {
 		/* XXX this 3 steps stuff should be simplified into one function */
-		subchan = do_newcall_options(device, OPT_SPEAKER_ON);
+		subchan = do_newcall_options(device, line, OPT_SPEAKER_ON);
 		if (!subchan) {
 			return;
 		}
@@ -2727,16 +2855,11 @@ static void handle_softkey_resume(struct sccp_device *device, uint32_t subchan_i
 	do_resume(device, subchan);
 }
 
-static void handle_softkey_transfer(struct sccp_device *device, uint32_t line_instance)
+static void handle_softkey_transfer(struct sccp_device *device)
 {
-	struct sccp_line *line = sccp_lines_get_by_instance(&device->lines, line_instance);
+	struct sccp_line *line;
 	struct sccp_subchannel *subchan;
 	struct sccp_subchannel *xfer_subchan;
-
-	if (!line) {
-		ast_log(LOG_NOTICE, "handle softkey transfer failed: no line %u\n", line_instance);
-		return;
-	}
 
 	if (!device->active_subchan) {
 		ast_log(LOG_NOTICE, "handle softkey transfer failed: no active subchan\n");
@@ -2751,6 +2874,8 @@ static void handle_softkey_transfer(struct sccp_device *device, uint32_t line_in
 	/* first time we press transfer */
 	if (!device->active_subchan->related) {
 		xfer_subchan = device->active_subchan;
+		/* the transfer target is called from the same line as the transferee */
+		line = xfer_subchan->line;
 
 		/* put on hold */
 		if (do_hold(device)) {
@@ -2810,11 +2935,11 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 		break;
 
 	case SOFTKEY_REDIAL:
-		handle_softkey_redial(device);
+		handle_softkey_redial(device, line_instance);
 		break;
 
 	case SOFTKEY_NEWCALL:
-		handle_softkey_newcall(device);
+		handle_softkey_newcall(device, line_instance);
 		break;
 
 	case SOFTKEY_HOLD:
@@ -2822,7 +2947,7 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 		break;
 
 	case SOFTKEY_TRNSFER:
-		handle_softkey_transfer(device, line_instance);
+		handle_softkey_transfer(device);
 		break;
 
 	case SOFTKEY_CFWDALL:
@@ -2908,13 +3033,37 @@ static void handle_stimulus_voicemail(struct sccp_device *device)
 	}
 
 	/* XXX 3 stuff steps should be replaced with something simpler */
-	subchan = do_newcall_options(device, OPT_SPEAKER_ON);
+	subchan = do_newcall_options(device, sccp_device_get_current_line(device), OPT_SPEAKER_ON);
 	if (!subchan) {
 		return;
 	}
 
 	ast_copy_string(device->exten, device->cfg->vmexten, sizeof(device->exten));
 	start_the_call(device, subchan);
+}
+
+static void handle_stimulus_line(struct sccp_device *device, uint32_t line_instance)
+{
+	struct sccp_line *line = sccp_lines_get_by_instance(&device->lines, line_instance);
+	struct sccp_subchannel *subchan;
+
+	if (!line) {
+		ast_log(LOG_NOTICE, "handle stimulus line failed: line %u not found\n", line_instance);
+		return;
+	}
+
+	subchan = sccp_line_get_next_subchan(line, SCCP_RINGIN);
+	if (subchan) {
+		do_answer_options(device, subchan, OPT_SPEAKER_ON);
+		return;
+	}
+
+	if (device->active_subchan && device->active_subchan->line == line) {
+		ast_debug(1, "ignoring stimulus line: line %s is already the current line\n", line->name);
+		return;
+	}
+
+	do_newcall_options(device, line, OPT_SPEAKER_ON);
 }
 
 static void handle_msg_stimulus(struct sccp_device *device, struct sccp_msg *msg)
@@ -2925,6 +3074,9 @@ static void handle_msg_stimulus(struct sccp_device *device, struct sccp_msg *msg
 	switch (stimulus) {
 	case STIMULUS_FEATUREBUTTON:
 		handle_stimulus_featurebutton(device, line_instance);
+		break;
+	case STIMULUS_LINE:
+		handle_stimulus_line(device, line_instance);
 		break;
 	case STIMULUS_SPEEDDIAL:
 		handle_stimulus_speeddial(device, line_instance);
@@ -3355,7 +3507,7 @@ struct sccp_line* sccp_device_line(struct sccp_device *device, unsigned int i)
 		return NULL;
 	}
 
-	return device->lines.line;
+	return device->lines.arr[i];
 }
 
 const char *sccp_device_name(const struct sccp_device *device)

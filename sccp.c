@@ -263,8 +263,8 @@ static char *cli_set_debug(struct ast_cli_entry *e, int cmd, struct ast_cli_args
 
 static char *cli_show_config(struct ast_cli_entry *e, int cmd, struct ast_cli_args *a)
 {
-#define FORMAT_STRING  "%-18.18s %-12.12s %-24.24s %-4d\n"
-#define FORMAT_STRING2 "%-18.18s %-12.12s %-24.24s %-4s\n"
+#define FORMAT_STRING  "%-18.18s %-12.12s %-5d %-24.24s %-4d\n"
+#define FORMAT_STRING2 "%-18.18s %-12.12s %-5s %-24.24s %-4s\n"
 	struct sccp_cfg *cfg;
 	struct sccp_device_cfg *device_cfg;
 	struct ao2_iterator iter;
@@ -285,12 +285,13 @@ static char *cli_show_config(struct ast_cli_entry *e, int cmd, struct ast_cli_ar
 	ast_cli(a->fd, "guest = %s\n", AST_CLI_YESNO(cfg->general_cfg->guest_device_cfg));
 	ast_cli(a->fd, "max_guests = %u\n\n", cfg->general_cfg->max_guests);
 
-	ast_cli(a->fd, FORMAT_STRING2, "Device", "Line", "Voicemail", "Speeddials");
+	ast_cli(a->fd, FORMAT_STRING2, "Device", "Line", "Lines", "Voicemail", "Speeddials");
 	iter = ao2_iterator_init(cfg->devices_cfg, 0);
 	while ((device_cfg = ao2_iterator_next(&iter))) {
 		ast_cli(a->fd, FORMAT_STRING,
 				device_cfg->name,
-				device_cfg->line_cfg->name,
+				device_cfg->lines_cfg[0]->name,
+				(int) device_cfg->line_count,
 				S_OR(device_cfg->voicemail, "(None)"),
 				(int) device_cfg->speeddial_count);
 		ao2_ref(device_cfg, -1);

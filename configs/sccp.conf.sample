@@ -16,6 +16,14 @@ line = 1001
 speeddial = 1-1
 speeddial = 1-2
 
+; multi-line device (i.e. Cisco 6941): one "line" option per line key, in order.
+; The first line is the default line used for voicemail and speeddials hints.
+[SEP00260B5D4E31]
+type = device
+line = 1004
+line = 1005
+speeddial = 1-1
+
 [1001]
 type = line
 cid_name = Alice
@@ -45,3 +53,15 @@ type = speeddial
 label = Carlos
 extension = 1003
 blf = yes
+
+[1004]
+type = line
+cid_name = Dave
+cid_num = 1004
+context = default
+
+[1005]
+type = line
+cid_name = Dave (2)
+cid_num = 1005
+context = default

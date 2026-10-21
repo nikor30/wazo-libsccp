@@ -37,8 +37,9 @@ struct sccp_device_cfg {
 	int dialtimeout;
 
 	int guest;
+	size_t line_count;
 	size_t speeddial_count;
-	struct sccp_line_cfg *line_cfg;
+	struct sccp_line_cfg **lines_cfg;
 	struct sccp_speeddial_cfg **speeddials_cfg;
 
 	struct sccp_device_cfg_internal *internal;
