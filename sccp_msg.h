@@ -248,6 +248,12 @@ struct onhook_message {
 	uint32_t callInstance;
 };
 
+#define HOOKFLASH_MESSAGE 0x0008
+struct hookflash_message {
+	uint32_t lineInstance;
+	uint32_t callInstance;
+};
+
 #define FORWARD_STATUS_REQ_MESSAGE 0x0009
 struct forward_status_req_message {
 	uint32_t lineInstance;
@@ -679,6 +685,7 @@ union sccp_data {
 	struct feature_status_req_message feature;
 	struct forward_status_req_message forward;
 	struct forward_status_res_message forwardstatus;
+	struct hookflash_message hookflash;
 	struct ip_port_message ipport;
 	struct keypad_button_message keypad;
 	struct line_status_req_message line;

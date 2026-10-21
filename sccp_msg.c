@@ -1189,6 +1189,8 @@ const char *sccp_msg_id_str(uint32_t msg_id) {
 		return "ip port";
 	case ENBLOC_CALL_MESSAGE:
 		return "enbloc call";
+	case HOOKFLASH_MESSAGE:
+		return "hookflash";
 	case KEYPAD_BUTTON_MESSAGE:
 		return "keypad button";
 	case STIMULUS_MESSAGE:

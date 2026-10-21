@@ -21,6 +21,7 @@
 /* wire sizes of the message bodies, from the SCCP protocol */
 _Static_assert(sizeof(struct display_prompt_status_message) == 44, "display prompt status size");
 _Static_assert(sizeof(struct clear_prompt_status_message) == 8, "clear prompt status size");
+_Static_assert(sizeof(struct hookflash_message) == 8, "hookflash size");
 _Static_assert(offsetof(struct button_template_res_message, definition) == 12, "button template header size");
 _Static_assert(sizeof(struct button_definition) == 2, "button definition size");
 _Static_assert(sizeof(struct button_template_res_message) == 12 + 2 * MAX_BUTTON_DEFINITION, "button template size");
@@ -148,6 +149,7 @@ static void test_msg_id_str(void)
 {
 	CHECK(!strcmp(sccp_msg_id_str(DISPLAY_PROMPT_STATUS_MESSAGE), "display prompt status"));
 	CHECK(!strcmp(sccp_msg_id_str(CLEAR_PROMPT_STATUS_MESSAGE), "clear prompt status"));
+	CHECK(!strcmp(sccp_msg_id_str(HOOKFLASH_MESSAGE), "hookflash"));
 }
 
 static void test_device_type_str(void)

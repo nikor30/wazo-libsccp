@@ -3014,6 +3014,20 @@ static void handle_softkey_transfer(struct sccp_device *device)
 	}
 }
 
+/*
+ * Devices without softkeys (i.e. 6901) transfer calls with hook flashes: the first one
+ * puts the call on hold and gets a dial tone, the second one completes the transfer.
+ */
+static void handle_msg_hookflash(struct sccp_device *device, struct sccp_msg *msg)
+{
+	if (!device->active_subchan) {
+		ast_debug(1, "ignoring hookflash: no active subchan\n");
+		return;
+	}
+
+	handle_softkey_transfer(device);
+}
+
 static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg *msg)
 {
 	uint32_t softkey_event = letohl(msg->data.softkeyevent.softKeyEvent);
@@ -3232,6 +3246,10 @@ static void handle_msg_state_common(struct sccp_device *device, struct sccp_msg 
 
 	case ENBLOC_CALL_MESSAGE:
 		handle_msg_enbloc_call(device, msg);
+		break;
+
+	case HOOKFLASH_MESSAGE:
+		handle_msg_hookflash(device, msg);
 		break;
 
 	case STIMULUS_MESSAGE:
