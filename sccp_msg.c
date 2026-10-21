@@ -15,6 +15,7 @@ static const uint8_t softkey_default_onhook[] = {
 	SOFTKEY_NEWCALL,
 	SOFTKEY_CFWDALL,
 	SOFTKEY_DND,
+	SOFTKEY_PICKUP,
 };
 
 static const uint8_t softkey_default_connected[] = {
@@ -41,6 +42,7 @@ static const uint8_t softkey_default_ringout[] = {
 static const uint8_t softkey_default_offhook[] = {
 	SOFTKEY_REDIAL,
 	SOFTKEY_ENDCALL,
+	SOFTKEY_PICKUP,
 };
 
 static const uint8_t softkey_default_dialintransfer[] = {

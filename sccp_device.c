@@ -2814,6 +2814,38 @@ static void handle_softkey_newcall(struct sccp_device *device, uint32_t line_ins
 	do_newcall_options(device, line, OPT_SPEAKER_ON);
 }
 
+static void handle_softkey_pickup(struct sccp_device *device, uint32_t line_instance)
+{
+	struct sccp_line *line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
+	struct ast_features_pickup_config *pickup_cfg;
+	struct sccp_subchannel *subchan;
+	char pickupexten[AST_MAX_EXTENSION];
+
+	/* the global pickup config, since there's no channel yet */
+	pickup_cfg = ast_get_chan_features_pickup_config(NULL);
+	if (!pickup_cfg) {
+		ast_log(LOG_ERROR, "handle softkey pickup failed: could not get the pickup config\n");
+		return;
+	}
+
+	ast_copy_string(pickupexten, pickup_cfg->pickupexten, sizeof(pickupexten));
+	ao2_ref(pickup_cfg, -1);
+
+	if (ast_strlen_zero(pickupexten)) {
+		ast_log(LOG_NOTICE, "handle softkey pickup failed: no pickupexten in features.conf\n");
+		return;
+	}
+
+	/* XXX this 3 steps stuff should be simplified into one function */
+	subchan = do_newcall_options(device, line, OPT_SPEAKER_ON);
+	if (!subchan) {
+		return;
+	}
+
+	ast_copy_string(device->exten, pickupexten, sizeof(device->exten));
+	start_the_call(device, subchan);
+}
+
 static void handle_softkey_redial(struct sccp_device *device, uint32_t line_instance)
 {
 	struct sccp_line *line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
@@ -2940,6 +2972,10 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 
 	case SOFTKEY_NEWCALL:
 		handle_softkey_newcall(device, line_instance);
+		break;
+
+	case SOFTKEY_PICKUP:
+		handle_softkey_pickup(device, line_instance);
 		break;
 
 	case SOFTKEY_HOLD:
