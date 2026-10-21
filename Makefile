@@ -12,13 +12,21 @@ ifdef VERSION
 	CFLAGS += -D'VERSION="$(VERSION)"'
 endif
 
-.PHONY: install clean
+TESTS = tests/test_sccp_msg
+
+.PHONY: install clean check
 
 $(TARGET): $(OBJECTS)
 	$(CC) $(LDFLAGS) $(OBJECTS) -o $@
 
 %.o: %.c $(HEADERS)
 	$(CC) -c $(CFLAGS) -o $@ $<
+
+tests/test_sccp_msg: tests/test_sccp_msg.c sccp_msg.o $(HEADERS)
+	$(CC) $(CFLAGS) -o $@ $< sccp_msg.o
+
+check: $(TESTS)
+	@for t in $(TESTS); do echo "$$t"; ./$$t || exit 1; done
 
 install: $(TARGET)
 	mkdir -p $(DESTDIR)/usr/lib/asterisk/modules
@@ -27,3 +35,4 @@ install: $(TARGET)
 clean:
 	rm -f $(OBJECTS)
 	rm -f $(TARGET)
+	rm -f $(TESTS)
