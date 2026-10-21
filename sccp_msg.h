@@ -30,6 +30,12 @@ enum sccp_device_type {
 	SCCP_DEVICE_7961 = 30018,
 	SCCP_DEVICE_8941 = 586,
 	SCCP_DEVICE_8945 = 585,
+	SCCP_DEVICE_6921 = 495,
+	SCCP_DEVICE_6941 = 496,
+	SCCP_DEVICE_6961 = 497,
+	SCCP_DEVICE_6901 = 547,
+	SCCP_DEVICE_6911 = 548,
+	SCCP_DEVICE_6945 = 564,
 };
 
 enum sccp_speaker_mode {
@@ -591,6 +597,20 @@ struct call_state_message {
 	uint32_t unknown;
 };
 
+#define DISPLAY_PROMPT_STATUS_MESSAGE 0x0112
+struct display_prompt_status_message {
+	uint32_t messageTimeout;
+	char promptMessage[32];
+	uint32_t lineInstance;
+	uint32_t callInstance;
+};
+
+#define CLEAR_PROMPT_STATUS_MESSAGE 0x0113
+struct clear_prompt_status_message {
+	uint32_t lineInstance;
+	uint32_t callInstance;
+};
+
 #define DISPLAY_NOTIFY_MESSAGE 0x0114
 struct display_notify_message {
 	uint32_t displayTimeout;
@@ -644,9 +664,11 @@ union sccp_data {
 	struct call_info_message callinfo;
 	struct call_state_message callstate;
 	struct capabilities_res_message caps;
+	struct clear_prompt_status_message clearprompt;
 	struct close_receive_channel_message closereceivechannel;
 	struct config_status_res_message configstatus;
 	struct dialed_number_message dialednumber;
+	struct display_prompt_status_message displayprompt;
 	struct display_notify_message notify;
 	struct enbloc_call_message enbloc;
 	struct feature_stat_message featurestatus;
@@ -704,9 +726,11 @@ void sccp_msg_callstate(struct sccp_msg *msg, enum sccp_state state, uint32_t li
 void sccp_msg_capabilities_req(struct sccp_msg *msg);
 void sccp_msg_config_status_res(struct sccp_msg *msg, const char *name, uint32_t line_count, uint32_t speeddial_count);
 void sccp_msg_clear_message(struct sccp_msg *msg);
+void sccp_msg_clear_prompt_status(struct sccp_msg *msg, uint32_t line_instance, uint32_t callid);
 void sccp_msg_close_receive_channel(struct sccp_msg *msg, uint32_t callid);
 void sccp_msg_dialed_number(struct sccp_msg *msg, const char *extension, uint32_t line_instance, uint32_t callid);
 void sccp_msg_display_message(struct sccp_msg *msg, const char *text);
+void sccp_msg_display_prompt_status(struct sccp_msg *msg, const char *text, uint32_t line_instance, uint32_t callid);
 void sccp_msg_feature_status(struct sccp_msg *msg, uint32_t instance, enum sccp_button_type type, enum sccp_blf_status status, const char *label);
 void sccp_msg_forward_status_res(struct sccp_msg *msg, uint32_t line_instance, const char *extension, uint32_t status);
 void sccp_msg_keep_alive_ack(struct sccp_msg *msg);

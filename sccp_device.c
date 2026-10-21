@@ -1280,6 +1280,12 @@ static int device_type_is_supported(enum sccp_device_type device_type)
 	case SCCP_DEVICE_8941:
 	case SCCP_DEVICE_8945:
 	case SCCP_DEVICE_CIPC:
+	case SCCP_DEVICE_6901:
+	case SCCP_DEVICE_6911:
+	case SCCP_DEVICE_6921:
+	case SCCP_DEVICE_6941:
+	case SCCP_DEVICE_6945:
+	case SCCP_DEVICE_6961:
 		supported = 1;
 		break;
 	default:
@@ -1536,11 +1542,32 @@ static void transmit_config_status_res(struct sccp_device *device)
 	sccp_session_transmit_msg(device->session, &msg);
 }
 
+/*
+ * The 69xx devices don't display the notify message, but the prompt status instead.
+ */
+static int device_uses_prompt_status(const struct sccp_device *device)
+{
+	switch (device->type) {
+	case SCCP_DEVICE_6901:
+	case SCCP_DEVICE_6921:
+	case SCCP_DEVICE_6941:
+	case SCCP_DEVICE_6945:
+	case SCCP_DEVICE_6961:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 static void transmit_clear_message(struct sccp_device *device)
 {
 	struct sccp_msg msg;
 
-	sccp_msg_clear_message(&msg);
+	if (device_uses_prompt_status(device)) {
+		sccp_msg_clear_prompt_status(&msg, 0, 0);
+	} else {
+		sccp_msg_clear_message(&msg);
+	}
 	sccp_session_transmit_msg(device->session, &msg);
 }
 
@@ -1556,7 +1583,11 @@ static void transmit_display_message(struct sccp_device *device, const char *tex
 {
 	struct sccp_msg msg;
 
-	sccp_msg_display_message(&msg, text);
+	if (device_uses_prompt_status(device)) {
+		sccp_msg_display_prompt_status(&msg, text, 0, 0);
+	} else {
+		sccp_msg_display_message(&msg, text);
+	}
 	sccp_session_transmit_msg(device->session, &msg);
 }
 

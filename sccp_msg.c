@@ -221,6 +221,14 @@ void sccp_msg_clear_message(struct sccp_msg *msg)
 	prepare_msg(msg, 0, CLEAR_NOTIFY_MESSAGE);
 }
 
+void sccp_msg_clear_prompt_status(struct sccp_msg *msg, uint32_t line_instance, uint32_t callid)
+{
+	prepare_msg(msg, sizeof(struct clear_prompt_status_message), CLEAR_PROMPT_STATUS_MESSAGE);
+
+	msg->data.clearprompt.lineInstance = htolel(line_instance);
+	msg->data.clearprompt.callInstance = htolel(callid);
+}
+
 void sccp_msg_close_receive_channel(struct sccp_msg *msg, uint32_t callid)
 {
 	prepare_msg(msg, sizeof(struct close_receive_channel_message), CLOSE_RECEIVE_CHANNEL_MESSAGE);
@@ -245,6 +253,16 @@ void sccp_msg_display_message(struct sccp_msg *msg, const char *text)
 
 	msg->data.notify.displayTimeout = 0;
 	ast_copy_string(msg->data.notify.displayMessage, text, sizeof(msg->data.notify.displayMessage));
+}
+
+void sccp_msg_display_prompt_status(struct sccp_msg *msg, const char *text, uint32_t line_instance, uint32_t callid)
+{
+	prepare_msg(msg, sizeof(struct display_prompt_status_message), DISPLAY_PROMPT_STATUS_MESSAGE);
+
+	msg->data.displayprompt.messageTimeout = 0;
+	ast_copy_string(msg->data.displayprompt.promptMessage, text, sizeof(msg->data.displayprompt.promptMessage));
+	msg->data.displayprompt.lineInstance = htolel(line_instance);
+	msg->data.displayprompt.callInstance = htolel(callid);
 }
 
 void sccp_msg_feature_status(struct sccp_msg *msg, uint32_t instance, enum sccp_button_type type, enum sccp_blf_status status, const char *label)
@@ -1117,6 +1135,18 @@ const char *sccp_device_type_str(enum sccp_device_type device_type)
 		return "8945";
 	case SCCP_DEVICE_CIPC:
 		return "CIPC";
+	case SCCP_DEVICE_6901:
+		return "6901";
+	case SCCP_DEVICE_6911:
+		return "6911";
+	case SCCP_DEVICE_6921:
+		return "6921";
+	case SCCP_DEVICE_6941:
+		return "6941";
+	case SCCP_DEVICE_6945:
+		return "6945";
+	case SCCP_DEVICE_6961:
+		return "6961";
 	}
 
 	return "unknown";
@@ -1244,6 +1274,10 @@ const char *sccp_msg_id_str(uint32_t msg_id) {
 		return "select soft keys";
 	case CALL_STATE_MESSAGE:
 		return "call state";
+	case DISPLAY_PROMPT_STATUS_MESSAGE:
+		return "display prompt status";
+	case CLEAR_PROMPT_STATUS_MESSAGE:
+		return "clear prompt status";
 	case DISPLAY_NOTIFY_MESSAGE:
 		return "display notify";
 	case CLEAR_NOTIFY_MESSAGE:

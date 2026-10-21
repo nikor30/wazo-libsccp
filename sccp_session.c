@@ -408,6 +408,15 @@ static int sccp_session_read_sock(struct sccp_session *session)
 	return -1;
 }
 
+static int sccp_session_transmit_keep_alive_ack(struct sccp_session *session)
+{
+	struct sccp_msg msg;
+
+	sccp_msg_keep_alive_ack(&msg);
+
+	return sccp_session_transmit_msg(session, &msg);
+}
+
 static int sccp_session_transmit_register_rej(struct sccp_session *session)
 {
 	struct sccp_msg msg;
@@ -484,6 +493,10 @@ static void sccp_session_handle_msg(struct sccp_session *session, struct sccp_ms
 		case REGISTER_MESSAGE:
 			sccp_session_handle_msg_register(session, msg);
 			break;
+		case KEEP_ALIVE_MESSAGE:
+			/* some devices (i.e. 6911) send a keep alive before registering */
+			sccp_session_transmit_keep_alive_ack(session);
+			return;
 		}
 	}
 
