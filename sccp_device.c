@@ -15,6 +15,7 @@
 #include <asterisk/module.h>
 #include <asterisk/musiconhold.h>
 #include <asterisk/network.h>
+#include <asterisk/parking.h>
 #include <asterisk/pbx.h>
 #include <asterisk/pickup.h>
 #include <asterisk/strings.h>
@@ -216,6 +217,10 @@ struct nolock_task_ast_queue_unhold {
 	struct ast_channel *channel;
 };
 
+struct nolock_task_park_call {
+	struct ast_channel *channel;
+};
+
 struct nolock_task_pickup_channel {
 	struct ast_channel *channel;
 };
@@ -231,6 +236,7 @@ union nolock_task_data {
 	struct nolock_task_ast_queue_hangup queue_hangup;
 	struct nolock_task_ast_queue_hold queue_hold;
 	struct nolock_task_ast_queue_unhold queue_unhold;
+	struct nolock_task_park_call park_call;
 	struct nolock_task_pickup_channel pickup_channel;
 	struct nolock_task_start_channel start_channel;
 };
@@ -789,6 +795,45 @@ static int add_ast_queue_unhold_task(struct sccp_device *device, struct ast_chan
 
 	task.exec = exec_ast_queue_unhold;
 	task.data.queue_unhold.channel = channel;
+
+	if (add_nolock_task(device, &task)) {
+		return -1;
+	}
+
+	ast_channel_ref(channel);
+
+	return 0;
+}
+
+static void exec_park_call(union nolock_task_data *data)
+{
+	struct ast_channel *channel = data->park_call.channel;
+	struct ast_bridge_channel *bridge_channel;
+
+	ast_channel_lock(channel);
+	bridge_channel = ast_channel_get_bridge_channel(channel);
+	ast_channel_unlock(channel);
+
+	if (!bridge_channel) {
+		ast_log(LOG_NOTICE, "park call failed: channel %s is not bridged\n", ast_channel_name(channel));
+	} else {
+		/* parks the other party and plays the parking space to this channel */
+		if (ast_parking_park_call(bridge_channel, NULL, 0)) {
+			ast_log(LOG_WARNING, "park call failed on channel %s\n", ast_channel_name(channel));
+		}
+
+		ao2_ref(bridge_channel, -1);
+	}
+
+	ast_channel_unref(channel);
+}
+
+static int add_park_call_task(struct sccp_device *device, struct ast_channel *channel)
+{
+	struct nolock_task task;
+
+	task.exec = exec_park_call;
+	task.data.park_call.channel = channel;
 
 	if (add_nolock_task(device, &task)) {
 		return -1;
@@ -2814,6 +2859,23 @@ static void handle_softkey_newcall(struct sccp_device *device, uint32_t line_ins
 	do_newcall_options(device, line, OPT_SPEAKER_ON);
 }
 
+static void handle_softkey_park(struct sccp_device *device)
+{
+	struct sccp_subchannel *subchan = device->active_subchan;
+
+	if (!subchan || !subchan->channel || subchan->state != SCCP_CONNECTED) {
+		ast_log(LOG_NOTICE, "handle softkey park failed: no connected subchan\n");
+		return;
+	}
+
+	if (!ast_parking_provider_registered()) {
+		ast_log(LOG_NOTICE, "handle softkey park failed: no parking provider (res_parking not loaded)\n");
+		return;
+	}
+
+	add_park_call_task(device, subchan->channel);
+}
+
 static void handle_softkey_pickup(struct sccp_device *device, uint32_t line_instance)
 {
 	struct sccp_line *line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
@@ -2976,6 +3038,10 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 
 	case SOFTKEY_PICKUP:
 		handle_softkey_pickup(device, line_instance);
+		break;
+
+	case SOFTKEY_PARK:
+		handle_softkey_park(device);
 		break;
 
 	case SOFTKEY_HOLD:
