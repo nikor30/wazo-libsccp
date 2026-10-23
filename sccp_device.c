@@ -2770,6 +2770,14 @@ static void handle_msg_onhook(struct sccp_device *device, struct sccp_msg *msg)
 	struct sccp_subchannel *subchan;
 	uint32_t subchan_id;
 
+	/* hanging up cancels the call forward input, else the next digits would end up in it */
+	if (device->callfwd == SCCP_CFWD_INPUTEXTEN) {
+		cancel_callforward_input(device);
+		if (!device->active_subchan) {
+			return;
+		}
+	}
+
 	if (device->proto_version == 11) {
 		subchan_id = letohl(msg->data.onhook.callInstance);
 		subchan = sccp_lines_get_subchan(&device->lines, subchan_id);
