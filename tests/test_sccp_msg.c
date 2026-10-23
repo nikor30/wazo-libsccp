@@ -23,6 +23,8 @@ _Static_assert(sizeof(struct display_prompt_status_message) == 44, "display prom
 _Static_assert(sizeof(struct clear_prompt_status_message) == 8, "clear prompt status size");
 _Static_assert(sizeof(struct hookflash_message) == 8, "hookflash size");
 _Static_assert(sizeof(struct set_ringer_message) == 20, "set ringer size");
+_Static_assert(sizeof(struct display_pri_notify_message) == 40, "display pri notify size");
+_Static_assert(sizeof(struct clear_pri_notify_message) == 4, "clear pri notify size");
 _Static_assert(offsetof(struct button_template_res_message, definition) == 12, "button template header size");
 _Static_assert(sizeof(struct button_definition) == 2, "button definition size");
 _Static_assert(sizeof(struct button_template_res_message) == 12 + 2 * MAX_BUTTON_DEFINITION, "button template size");
@@ -151,6 +153,26 @@ static void test_ringer_mode(void)
 	CHECK(letohl(msg.data.setringer.callReference) == 1234);
 }
 
+static void test_pri_notify(void)
+{
+	struct sccp_msg msg;
+
+	sccp_msg_display_pri_notify(&msg, "Test_6", 10, 1);
+
+	CHECK(letohl(msg.id) == DISPLAY_PRI_NOTIFY_MESSAGE);
+	CHECK(letohl(msg.length) == SCCP_MSG_LEN_FROM_DATA_LEN(40));
+	CHECK(letohl(msg.data.displaypri.displayTimeout) == 10);
+	CHECK(letohl(msg.data.displaypri.priority) == 1);
+	CHECK(!strcmp(msg.data.displaypri.notify, "Test_6"));
+
+	sccp_msg_clear_pri_notify(&msg, 5);
+
+	CHECK(letohl(msg.id) == CLEAR_PRI_NOTIFY_MESSAGE);
+	CHECK(letohl(msg.length) == SCCP_MSG_LEN_FROM_DATA_LEN(4));
+	CHECK(letohl(msg.data.clearpri.priority) == 5);
+	CHECK(!strcmp(sccp_msg_id_str(DISPLAY_PRI_NOTIFY_MESSAGE), "display pri notify"));
+}
+
 static void test_keep_alive_ack(void)
 {
 	struct sccp_msg msg;
@@ -168,6 +190,30 @@ static void test_msg_id_str(void)
 	CHECK(!strcmp(sccp_msg_id_str(HOOKFLASH_MESSAGE), "hookflash"));
 	/* the id a CP-6941 sends after a start media transmission */
 	CHECK(!strcmp(sccp_msg_id_str(0x0154), "start media transmission ack"));
+}
+
+static void test_timed_notify(void)
+{
+	struct sccp_msg msg;
+
+	sccp_msg_display_notify(&msg, "Park failed", 5);
+
+	CHECK(letohl(msg.id) == DISPLAY_NOTIFY_MESSAGE);
+	CHECK(letohl(msg.data.notify.displayTimeout) == 5);
+	CHECK(!strcmp(msg.data.notify.displayMessage, "Park failed"));
+
+	sccp_msg_display_timed_prompt_status(&msg, "No call to pick up", 5, 2, 0);
+
+	CHECK(letohl(msg.id) == DISPLAY_PROMPT_STATUS_MESSAGE);
+	CHECK(letohl(msg.data.displayprompt.messageTimeout) == 5);
+	CHECK(!strcmp(msg.data.displayprompt.promptMessage, "No call to pick up"));
+	CHECK(letohl(msg.data.displayprompt.lineInstance) == 2);
+
+	/* the untimed variants still display until cleared */
+	sccp_msg_display_message(&msg, "DND");
+	CHECK(letohl(msg.data.notify.displayTimeout) == 0);
+	sccp_msg_display_prompt_status(&msg, "DND", 0, 0);
+	CHECK(letohl(msg.data.displayprompt.messageTimeout) == 0);
 }
 
 static void test_device_type_str(void)
@@ -241,8 +287,10 @@ int main(void)
 	test_display_prompt_status();
 	test_clear_prompt_status();
 	test_ringer_mode();
+	test_pri_notify();
 	test_keep_alive_ack();
 	test_msg_id_str();
+	test_timed_notify();
 	test_device_type_str();
 	test_deserializer();
 

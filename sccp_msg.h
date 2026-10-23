@@ -630,6 +630,18 @@ struct display_notify_message {
 
 #define CLEAR_NOTIFY_MESSAGE 0x0115
 
+#define DISPLAY_PRI_NOTIFY_MESSAGE 0x0120
+struct display_pri_notify_message {
+	uint32_t displayTimeout;
+	uint32_t priority;
+	char notify[32];
+};
+
+#define CLEAR_PRI_NOTIFY_MESSAGE 0x0121
+struct clear_pri_notify_message {
+	uint32_t priority;
+};
+
 #define ACTIVATE_CALL_PLANE_MESSAGE 0x0116
 struct activate_call_plane_message {
 	uint32_t lineInstance;
@@ -682,6 +694,8 @@ union sccp_data {
 	struct dialed_number_message dialednumber;
 	struct display_prompt_status_message displayprompt;
 	struct display_notify_message notify;
+	struct display_pri_notify_message displaypri;
+	struct clear_pri_notify_message clearpri;
 	struct enbloc_call_message enbloc;
 	struct feature_stat_message featurestatus;
 	struct feature_status_req_message feature;
@@ -743,7 +757,11 @@ void sccp_msg_clear_prompt_status(struct sccp_msg *msg, uint32_t line_instance, 
 void sccp_msg_close_receive_channel(struct sccp_msg *msg, uint32_t callid);
 void sccp_msg_dialed_number(struct sccp_msg *msg, const char *extension, uint32_t line_instance, uint32_t callid);
 void sccp_msg_display_message(struct sccp_msg *msg, const char *text);
+void sccp_msg_display_notify(struct sccp_msg *msg, const char *text, uint32_t timeout);
+void sccp_msg_display_pri_notify(struct sccp_msg *msg, const char *text, uint32_t timeout, uint32_t priority);
+void sccp_msg_clear_pri_notify(struct sccp_msg *msg, uint32_t priority);
 void sccp_msg_display_prompt_status(struct sccp_msg *msg, const char *text, uint32_t line_instance, uint32_t callid);
+void sccp_msg_display_timed_prompt_status(struct sccp_msg *msg, const char *text, uint32_t timeout, uint32_t line_instance, uint32_t callid);
 void sccp_msg_feature_status(struct sccp_msg *msg, uint32_t instance, enum sccp_button_type type, enum sccp_blf_status status, const char *label);
 void sccp_msg_forward_status_res(struct sccp_msg *msg, uint32_t line_instance, const char *extension, uint32_t status);
 void sccp_msg_keep_alive_ack(struct sccp_msg *msg);

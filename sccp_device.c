@@ -219,10 +219,16 @@ struct nolock_task_ast_queue_unhold {
 
 struct nolock_task_park_call {
 	struct ast_channel *channel;
+	/* to tell the user when parking failed */
+	struct sccp_device *device;
+	uint32_t line_instance;
 };
 
 struct nolock_task_pickup_channel {
 	struct ast_channel *channel;
+	/* to tell the user when there was no call to pick up */
+	struct sccp_device *device;
+	uint32_t line_instance;
 };
 
 struct nolock_task_start_channel {
@@ -257,6 +263,7 @@ static void sccp_device_lock(struct sccp_device *device);
 static void sccp_device_unlock(struct sccp_device *device);
 static void sccp_device_panic(struct sccp_device *device);
 static void subscribe_mwi(struct sccp_device *device);
+static void transmit_failure_notify(struct sccp_device *device, const char *text, uint32_t line_instance);
 static void unsubscribe_mwi(struct sccp_device *device);
 static void handle_msg_state_common(struct sccp_device *device, struct sccp_msg *msg, uint32_t msg_id);
 static void transmit_feature_status(struct sccp_device *device, struct sccp_speeddial *sd);
@@ -809,6 +816,7 @@ static void exec_park_call(union nolock_task_data *data)
 {
 	struct ast_channel *channel = data->park_call.channel;
 	struct ast_bridge_channel *bridge_channel;
+	int failed = 0;
 
 	ast_channel_lock(channel);
 	bridge_channel = ast_channel_get_bridge_channel(channel);
@@ -816,24 +824,33 @@ static void exec_park_call(union nolock_task_data *data)
 
 	if (!bridge_channel) {
 		ast_log(LOG_NOTICE, "park call failed: channel %s is not bridged\n", ast_channel_name(channel));
+		failed = 1;
 	} else {
 		/* parks the other party and plays the parking space to this channel */
 		if (ast_parking_park_call(bridge_channel, NULL, 0)) {
 			ast_log(LOG_WARNING, "park call failed on channel %s\n", ast_channel_name(channel));
+			failed = 1;
 		}
 
 		ao2_ref(bridge_channel, -1);
 	}
 
+	if (failed) {
+		transmit_failure_notify(data->park_call.device, "Park failed", data->park_call.line_instance);
+	}
+
 	ast_channel_unref(channel);
 }
 
-static int add_park_call_task(struct sccp_device *device, struct ast_channel *channel)
+static int add_park_call_task(struct sccp_device *device, struct sccp_subchannel *subchan)
 {
+	struct ast_channel *channel = subchan->channel;
 	struct nolock_task task;
 
 	task.exec = exec_park_call;
 	task.data.park_call.channel = channel;
+	task.data.park_call.device = device;
+	task.data.park_call.line_instance = subchan->line->instance;
 
 	if (add_nolock_task(device, &task)) {
 		return -1;
@@ -850,6 +867,7 @@ static void exec_pickup_channel(union nolock_task_data *data)
 
 	if (ast_pickup_call(channel)) {
 		ast_channel_hangupcause_set(channel, AST_CAUSE_CALL_REJECTED);
+		transmit_failure_notify(data->pickup_channel.device, "No call to pick up", data->pickup_channel.line_instance);
 	} else {
 		ast_channel_hangupcause_set(channel, AST_CAUSE_NORMAL_CLEARING);
 	}
@@ -858,12 +876,15 @@ static void exec_pickup_channel(union nolock_task_data *data)
 	ast_channel_unref(channel);
 }
 
-static int add_pickup_channel_task(struct sccp_device *device, struct ast_channel *channel)
+static int add_pickup_channel_task(struct sccp_device *device, struct sccp_subchannel *subchan)
 {
+	struct ast_channel *channel = subchan->channel;
 	struct nolock_task task;
 
 	task.exec = exec_pickup_channel;
 	task.data.pickup_channel.channel = channel;
+	task.data.pickup_channel.device = device;
+	task.data.pickup_channel.line_instance = subchan->line->instance;
 
 	if (add_nolock_task(device, &task)) {
 		return -1;
@@ -1686,7 +1707,15 @@ static void transmit_config_status_res(struct sccp_device *device)
 /*
  * The 69xx devices don't display the notify message, but the prompt status instead.
  */
-static int device_uses_prompt_status(const struct sccp_device *device)
+/*
+ * 69xx only show the priority notify on their status line (tested on a CP-6941: display
+ * notify and prompt status without call are ignored).
+ */
+/* lower is more important; the DND / call forward status stays until cleared */
+#define FAILURE_PRI_NOTIFY_PRIORITY 1
+#define STATUS_PRI_NOTIFY_PRIORITY 5
+
+static int device_uses_pri_notify(const struct sccp_device *device)
 {
 	switch (device->type) {
 	case SCCP_DEVICE_6901:
@@ -1704,8 +1733,8 @@ static void transmit_clear_message(struct sccp_device *device)
 {
 	struct sccp_msg msg;
 
-	if (device_uses_prompt_status(device)) {
-		sccp_msg_clear_prompt_status(&msg, 0, 0);
+	if (device_uses_pri_notify(device)) {
+		sccp_msg_clear_pri_notify(&msg, STATUS_PRI_NOTIFY_PRIORITY);
 	} else {
 		sccp_msg_clear_message(&msg);
 	}
@@ -1724,12 +1753,37 @@ static void transmit_display_message(struct sccp_device *device, const char *tex
 {
 	struct sccp_msg msg;
 
-	if (device_uses_prompt_status(device)) {
-		sccp_msg_display_prompt_status(&msg, text, 0, 0);
+	if (device_uses_pri_notify(device)) {
+		sccp_msg_display_pri_notify(&msg, text, 0, STATUS_PRI_NOTIFY_PRIORITY);
 	} else {
 		sccp_msg_display_message(&msg, text);
 	}
 	sccp_session_transmit_msg(device->session, &msg);
+}
+
+#define FAILURE_NOTIFY_TIMEOUT 5
+
+/*
+ * Show a short-lived text when a feature failed, instead of failing silently.
+ *
+ * \note must be called without the device lock (i.e. from a nolock task)
+ */
+static void transmit_failure_notify(struct sccp_device *device, const char *text, uint32_t line_instance)
+{
+	struct sccp_msg msg;
+
+	sccp_device_lock(device);
+
+	if (device->state == STATE_WORKING) {
+		if (device_uses_pri_notify(device)) {
+			sccp_msg_display_pri_notify(&msg, text, FAILURE_NOTIFY_TIMEOUT, FAILURE_PRI_NOTIFY_PRIORITY);
+		} else {
+			sccp_msg_display_notify(&msg, text, FAILURE_NOTIFY_TIMEOUT);
+		}
+		sccp_session_transmit_msg(device->session, &msg);
+	}
+
+	sccp_device_unlock(device);
 }
 
 static void transmit_feature_status(struct sccp_device *device, struct sccp_speeddial *sd)
@@ -2455,7 +2509,7 @@ static int start_the_call(struct sccp_device *device, struct sccp_subchannel *su
 	line->device->exten[0] = '\0';
 
 	if (!strcmp(device->last_exten, pickupexten)) {
-		add_pickup_channel_task(device, subchan->channel);
+		add_pickup_channel_task(device, subchan);
 	} else {
 		add_start_channel_task(device, subchan->channel);
 	}
@@ -2886,7 +2940,7 @@ static void handle_softkey_park(struct sccp_device *device)
 		return;
 	}
 
-	add_park_call_task(device, subchan->channel);
+	add_park_call_task(device, subchan);
 }
 
 static void handle_softkey_pickup(struct sccp_device *device, uint32_t line_instance)

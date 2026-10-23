@@ -230,6 +230,26 @@ void sccp_msg_clear_message(struct sccp_msg *msg)
 	prepare_msg(msg, 0, CLEAR_NOTIFY_MESSAGE);
 }
 
+/*
+ * The text a 69xx shows on its status line (it ignores display notify and prompt status
+ * without call). Timeout in seconds, 0 to display the text until it's cleared.
+ */
+void sccp_msg_display_pri_notify(struct sccp_msg *msg, const char *text, uint32_t timeout, uint32_t priority)
+{
+	prepare_msg(msg, sizeof(struct display_pri_notify_message), DISPLAY_PRI_NOTIFY_MESSAGE);
+
+	msg->data.displaypri.displayTimeout = htolel(timeout);
+	msg->data.displaypri.priority = htolel(priority);
+	ast_copy_string(msg->data.displaypri.notify, text, sizeof(msg->data.displaypri.notify));
+}
+
+void sccp_msg_clear_pri_notify(struct sccp_msg *msg, uint32_t priority)
+{
+	prepare_msg(msg, sizeof(struct clear_pri_notify_message), CLEAR_PRI_NOTIFY_MESSAGE);
+
+	msg->data.clearpri.priority = htolel(priority);
+}
+
 void sccp_msg_clear_prompt_status(struct sccp_msg *msg, uint32_t line_instance, uint32_t callid)
 {
 	prepare_msg(msg, sizeof(struct clear_prompt_status_message), CLEAR_PROMPT_STATUS_MESSAGE);
@@ -258,17 +278,29 @@ void sccp_msg_dialed_number(struct sccp_msg *msg, const char *extension, uint32_
 
 void sccp_msg_display_message(struct sccp_msg *msg, const char *text)
 {
+	sccp_msg_display_notify(msg, text, 0);
+}
+
+/* timeout in seconds, 0 to display the text until it's cleared */
+void sccp_msg_display_notify(struct sccp_msg *msg, const char *text, uint32_t timeout)
+{
 	prepare_msg(msg, sizeof(struct display_notify_message), DISPLAY_NOTIFY_MESSAGE);
 
-	msg->data.notify.displayTimeout = 0;
+	msg->data.notify.displayTimeout = htolel(timeout);
 	ast_copy_string(msg->data.notify.displayMessage, text, sizeof(msg->data.notify.displayMessage));
 }
 
 void sccp_msg_display_prompt_status(struct sccp_msg *msg, const char *text, uint32_t line_instance, uint32_t callid)
 {
+	sccp_msg_display_timed_prompt_status(msg, text, 0, line_instance, callid);
+}
+
+/* timeout in seconds, 0 to display the text until it's cleared */
+void sccp_msg_display_timed_prompt_status(struct sccp_msg *msg, const char *text, uint32_t timeout, uint32_t line_instance, uint32_t callid)
+{
 	prepare_msg(msg, sizeof(struct display_prompt_status_message), DISPLAY_PROMPT_STATUS_MESSAGE);
 
-	msg->data.displayprompt.messageTimeout = 0;
+	msg->data.displayprompt.messageTimeout = htolel(timeout);
 	ast_copy_string(msg->data.displayprompt.promptMessage, text, sizeof(msg->data.displayprompt.promptMessage));
 	msg->data.displayprompt.lineInstance = htolel(line_instance);
 	msg->data.displayprompt.callInstance = htolel(callid);
@@ -1298,6 +1330,10 @@ const char *sccp_msg_id_str(uint32_t msg_id) {
 		return "display notify";
 	case CLEAR_NOTIFY_MESSAGE:
 		return "clear notify";
+	case DISPLAY_PRI_NOTIFY_MESSAGE:
+		return "display pri notify";
+	case CLEAR_PRI_NOTIFY_MESSAGE:
+		return "clear pri notify";
 	case ACTIVATE_CALL_PLANE_MESSAGE:
 		return "activate call plane";
 	case DIALED_NUMBER_MESSAGE:
