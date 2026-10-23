@@ -366,13 +366,16 @@ void sccp_msg_register_rej(struct sccp_msg *msg)
 	msg->data.regrej.errMsg[0] = '\0';
 }
 
-void sccp_msg_ringer_mode(struct sccp_msg *msg, enum sccp_ringer_mode mode)
+void sccp_msg_ringer_mode(struct sccp_msg *msg, enum sccp_ringer_mode mode, uint32_t line_instance, uint32_t callid)
 {
 	prepare_msg(msg, sizeof(struct set_ringer_message), SET_RINGER_MESSAGE);
 
 	msg->data.setringer.ringerMode = htolel(mode);
-	msg->data.setringer.unknown1 = htolel(1);
-	msg->data.setringer.unknown2 = htolel(1);
+	/* 1 = normal (repeating) ring */
+	msg->data.setringer.ringDuration = htolel(1);
+	/* multi-line phones (i.e. 69xx) only ring if the line and call are right */
+	msg->data.setringer.lineInstance = htolel(line_instance);
+	msg->data.setringer.callReference = htolel(callid);
 }
 
 void sccp_msg_select_softkeys(struct sccp_msg *msg, uint32_t line_instance, uint32_t callid, enum sccp_softkey_status softkey)
@@ -965,8 +968,10 @@ static void dump_set_lamp(char *str, size_t size, const struct set_lamp_message 
 static void dump_set_ringer(char *str, size_t size, const struct set_ringer_message *m)
 {
 	snprintf(str, size,
-			"Mode: %s\n",
-			sccp_ringer_mode_str(letohl(m->ringerMode)));
+			"Mode: %s\n"
+			"Line instance: %u\n"
+			"Call ID: %u\n",
+			sccp_ringer_mode_str(letohl(m->ringerMode)), letohl(m->lineInstance), letohl(m->callReference));
 }
 
 static void dump_set_speaker(char *str, size_t size, const struct set_speaker_message *m)

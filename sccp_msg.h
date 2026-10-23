@@ -361,9 +361,10 @@ struct stop_tone_message {
 #define SET_RINGER_MESSAGE 0x0085
 struct set_ringer_message {
 	uint32_t ringerMode;
-	uint32_t unknown1;
-	uint32_t unknown2;
-	uint32_t space[2];
+	uint32_t ringDuration;
+	uint32_t lineInstance;
+	uint32_t callReference;
+	uint32_t space;
 };
 
 #define SET_LAMP_MESSAGE 0x0086
@@ -751,7 +752,7 @@ void sccp_msg_notification(struct sccp_msg *msg, uint32_t transactionId, uint32_
 void sccp_msg_open_receive_channel(struct sccp_msg *msg, uint32_t callid, uint32_t packets, uint32_t capability);
 void sccp_msg_register_ack(struct sccp_msg *msg, const char *datefmt, uint32_t keepalive, uint8_t proto_version, uint8_t unknown1, uint8_t unknown2, uint8_t unknown3);
 void sccp_msg_register_rej(struct sccp_msg *msg);
-void sccp_msg_ringer_mode(struct sccp_msg *msg, enum sccp_ringer_mode mode);
+void sccp_msg_ringer_mode(struct sccp_msg *msg, enum sccp_ringer_mode mode, uint32_t line_instance, uint32_t callid);
 void sccp_msg_select_softkeys(struct sccp_msg *msg, uint32_t line_instance, uint32_t callid, enum sccp_softkey_status softkey);
 void sccp_msg_softkey_set_res(struct sccp_msg *msg);
 void sccp_msg_softkey_template_res(struct sccp_msg *msg);

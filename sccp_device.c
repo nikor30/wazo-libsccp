@@ -1790,11 +1790,11 @@ static void transmit_reset(struct sccp_device *device, enum sccp_reset_type type
 	sccp_session_transmit_msg(device->session, &msg);
 }
 
-static void transmit_ringer_mode(struct sccp_device *device, enum sccp_ringer_mode mode)
+static void transmit_subchan_ringer_mode(struct sccp_device *device, struct sccp_subchannel *subchan, enum sccp_ringer_mode mode)
 {
 	struct sccp_msg msg;
 
-	sccp_msg_ringer_mode(&msg, mode);
+	sccp_msg_ringer_mode(&msg, mode, subchan->line->instance, subchan->id);
 	sccp_session_transmit_msg(device->session, &msg);
 }
 
@@ -2265,7 +2265,7 @@ static void do_clear_subchannel(struct sccp_device *device, struct sccp_subchann
 		transmit_close_receive_channel(device, subchan->id);
 	}
 
-	transmit_ringer_mode(device, SCCP_RING_OFF);
+	transmit_subchan_ringer_mode(device, subchan, SCCP_RING_OFF);
 	transmit_subchan_callstate(device, subchan, SCCP_ONHOOK);
 	transmit_subchan_stop_tone(device, subchan);
 
@@ -2353,7 +2353,7 @@ static int do_answer_options(struct sccp_device *device, struct sccp_subchannel 
 		transmit_speaker_mode(device, SCCP_SPEAKERON);
 	}
 
-	transmit_ringer_mode(device, SCCP_RING_OFF);
+	transmit_subchan_ringer_mode(device, subchan, SCCP_RING_OFF);
 	transmit_subchan_callstate(device, subchan, SCCP_OFFHOOK);
 	transmit_subchan_callstate(device, subchan, SCCP_CONNECTED);
 	transmit_subchan_stop_tone(device, subchan);
@@ -3820,7 +3820,7 @@ int sccp_channel_tech_call(struct ast_channel *channel, const char *dest, int ti
 	subchan->state = SCCP_RINGIN;
 
 	if (!device->active_subchan && !ast_test_flag(subchan, SUBCHANNEL_AUTOANSWER)) {
-		transmit_ringer_mode(device, SCCP_RING_INSIDE);
+		transmit_subchan_ringer_mode(device, subchan, SCCP_RING_INSIDE);
 	}
 
 	format_party_name(channel, name, sizeof(name));
@@ -4059,12 +4059,12 @@ int sccp_channel_tech_indicate(struct ast_channel *channel, int ind, const void 
 		break;
 
 	case AST_CONTROL_BUSY:
-		transmit_ringer_mode(device, SCCP_RING_OFF);
+		transmit_subchan_ringer_mode(device, subchan, SCCP_RING_OFF);
 		transmit_subchan_tone(device, subchan, SCCP_TONE_BUSY);
 		break;
 
 	case AST_CONTROL_CONGESTION:
-		transmit_ringer_mode(device, SCCP_RING_OFF);
+		transmit_subchan_ringer_mode(device, subchan, SCCP_RING_OFF);
 		transmit_subchan_tone(device, subchan, SCCP_TONE_BUSY);
 		break;
 

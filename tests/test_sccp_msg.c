@@ -22,6 +22,7 @@
 _Static_assert(sizeof(struct display_prompt_status_message) == 44, "display prompt status size");
 _Static_assert(sizeof(struct clear_prompt_status_message) == 8, "clear prompt status size");
 _Static_assert(sizeof(struct hookflash_message) == 8, "hookflash size");
+_Static_assert(sizeof(struct set_ringer_message) == 20, "set ringer size");
 _Static_assert(offsetof(struct button_template_res_message, definition) == 12, "button template header size");
 _Static_assert(sizeof(struct button_definition) == 2, "button definition size");
 _Static_assert(sizeof(struct button_template_res_message) == 12 + 2 * MAX_BUTTON_DEFINITION, "button template size");
@@ -135,6 +136,21 @@ static void test_clear_prompt_status(void)
 	CHECK(letohl(msg.data.clearprompt.callInstance) == 99);
 }
 
+static void test_ringer_mode(void)
+{
+	struct sccp_msg msg;
+
+	sccp_msg_ringer_mode(&msg, SCCP_RING_INSIDE, 2, 1234);
+
+	CHECK(letohl(msg.id) == SET_RINGER_MESSAGE);
+	CHECK(letohl(msg.length) == SCCP_MSG_LEN_FROM_DATA_LEN(20));
+	CHECK(letohl(msg.data.setringer.ringerMode) == SCCP_RING_INSIDE);
+	CHECK(letohl(msg.data.setringer.ringDuration) == 1);
+	/* the line and call to ring, not always line 1 */
+	CHECK(letohl(msg.data.setringer.lineInstance) == 2);
+	CHECK(letohl(msg.data.setringer.callReference) == 1234);
+}
+
 static void test_keep_alive_ack(void)
 {
 	struct sccp_msg msg;
@@ -222,6 +238,7 @@ int main(void)
 	test_button_template_res_large();
 	test_display_prompt_status();
 	test_clear_prompt_status();
+	test_ringer_mode();
 	test_keep_alive_ack();
 	test_msg_id_str();
 	test_device_type_str();
