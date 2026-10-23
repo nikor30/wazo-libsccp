@@ -3340,6 +3340,10 @@ static void handle_msg_state_common(struct sccp_device *device, struct sccp_msg 
 	case SUBSCRIPTION_STATUS_REQ_MESSAGE:
 		handle_msg_subscription_status_req(device, msg);
 		break;
+	case ACCESSORY_STATUS_MESSAGE:
+	case START_MEDIA_TRANSMISSION_ACK_MESSAGE:
+		/* informational, nothing to do */
+		break;
 	default:
 		ast_debug(1, "ignoring message with ID 0x%04X\n", msg_id);
 		break;

@@ -166,6 +166,8 @@ static void test_msg_id_str(void)
 	CHECK(!strcmp(sccp_msg_id_str(DISPLAY_PROMPT_STATUS_MESSAGE), "display prompt status"));
 	CHECK(!strcmp(sccp_msg_id_str(CLEAR_PROMPT_STATUS_MESSAGE), "clear prompt status"));
 	CHECK(!strcmp(sccp_msg_id_str(HOOKFLASH_MESSAGE), "hookflash"));
+	/* the id a CP-6941 sends after a start media transmission */
+	CHECK(!strcmp(sccp_msg_id_str(0x0154), "start media transmission ack"));
 }
 
 static void test_device_type_str(void)

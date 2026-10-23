@@ -666,7 +666,8 @@ struct notification_message {
 	char text[97];
 };
 
-#define START_MEDIA_TRANSMISSION_ACK_MESSAGE 0x0159
+/* sent by the phone after a start media transmission */
+#define START_MEDIA_TRANSMISSION_ACK_MESSAGE 0x0154
 
 union sccp_data {
 	struct activate_call_plane_message activatecallplane;
