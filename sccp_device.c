@@ -1920,6 +1920,19 @@ static void transmit_subchan_selectsoftkeys(struct sccp_device *device, struct s
 	transmit_selectsoftkeys(device, subchan->line->instance, subchan->id, softkey);
 }
 
+/*
+ * A connected subchan that is part of a transfer keeps the transfer softkeys, else
+ * the second transfer press can't complete it (69xx turn it into a resume).
+ */
+static void transmit_subchan_connected_softkeys(struct sccp_device *device, struct sccp_subchannel *subchan)
+{
+	if (subchan->related) {
+		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNINTRANSFER);
+	} else {
+		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNECTED);
+	}
+}
+
 static void transmit_subchan_start_media_transmission(struct sccp_device *device, struct sccp_subchannel *subchan, struct sockaddr_in *endpoint)
 {
 	struct sccp_msg msg;
@@ -2162,7 +2175,7 @@ static int do_resume(struct sccp_device *device, struct sccp_subchannel *subchan
 {
 	/* put on connected */
 	transmit_subchan_callstate(device, subchan, SCCP_CONNECTED);
-	transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNECTED);
+	transmit_subchan_connected_softkeys(device, subchan);
 
 	/* open our speaker */
 	transmit_speaker_mode(device, SCCP_SPEAKERON);
@@ -3889,7 +3902,7 @@ int sccp_channel_tech_answer(struct ast_channel *channel)
 
 	transmit_subchan_callstate(device, subchan, SCCP_CONNECTED);
 	transmit_subchan_stop_tone(device, subchan);
-	transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNECTED);
+	transmit_subchan_connected_softkeys(device, subchan);
 
 	sccp_device_unlock(device);
 
