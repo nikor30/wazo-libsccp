@@ -107,6 +107,11 @@ struct sccp_line {
 	/* const */
 	uint32_t instance;
 
+	/* (dynamic) do not disturb and call forward all, per line */
+	int dnd;
+	int callfwd_active;
+	char callfwd_exten[AST_MAX_EXTENSION];
+
 	/* const, same string as cfg->name, but this one can be used safely in
 	 * non-session thread without holding the device lock
 	 */
@@ -120,10 +125,10 @@ struct sccp_lines {
 	size_t count;
 };
 
+/* call forward input on the device; the active call forwards are per line */
 enum call_forward_status {
 	SCCP_CFWD_INACTIVE,
 	SCCP_CFWD_INPUTEXTEN,
-	SCCP_CFWD_ACTIVE,
 };
 
 enum receive_channel_status {
@@ -171,12 +176,14 @@ struct sccp_device {
 	/* (dynamic) */
 	struct sccp_subchannel *active_subchan;
 
+	/* (dynamic) the line whose call forward is being input */
+	struct sccp_line *callfwd_line;
+
 	uint32_t serial_callid;
 	uint32_t callfwd_id;
 	enum call_forward_status callfwd;
 	enum receive_channel_status recv_chan_status;
 	enum sccp_device_state state;
-	int dnd;
 	unsigned int flags;
 	enum sccp_device_type type;
 	uint8_t proto_version;
@@ -187,7 +194,6 @@ struct sccp_device {
 	char name[SCCP_DEVICE_NAME_MAX];
 	char exten[AST_MAX_EXTENSION];
 	char last_exten[AST_MAX_EXTENSION];
-	char callfwd_exten[AST_MAX_EXTENSION];
 };
 
 struct nolock_task_ast_bridge_transfer_attended {
@@ -1110,6 +1116,9 @@ static struct sccp_line *sccp_line_alloc(struct sccp_line_cfg *cfg, struct sccp_
 	line->cfg = cfg;
 	ao2_ref(cfg, +1);
 	line->instance = instance;
+	line->dnd = 0;
+	line->callfwd_active = 0;
+	line->callfwd_exten[0] = '\0';
 	ast_copy_string(line->name, cfg->name, sizeof(line->name));
 
 	return line;
@@ -1490,15 +1499,14 @@ static struct sccp_device *sccp_device_alloc(struct sccp_device_cfg *cfg, struct
 	 */
 	device->serial_callid = time(NULL);
 	device->recv_chan_status = SCCP_RECV_CHAN_CLOSED;
-	device->dnd = 0;
 	device->callfwd = SCCP_CFWD_INACTIVE;
+	device->callfwd_line = NULL;
 	device->flags = 0;
 	device->type = info->type;
 	device->proto_version = info->proto_version;
 	ast_copy_string(device->name, info->name, sizeof(device->name));
 	device->exten[0] = '\0';
 	device->last_exten[0] = '\0';
-	device->callfwd_exten[0] = '\0';
 
 	return device;
 }
@@ -1935,14 +1943,23 @@ static void transmit_version_res(struct sccp_device *device)
 
 static void transmit_line_forward_status_res(struct sccp_device *device, struct sccp_line *line)
 {
-	uint32_t status = device->callfwd == SCCP_CFWD_ACTIVE ? 1 : 0;
-
-	transmit_forward_status_res(device, line->instance, device->callfwd_exten, status);
+	transmit_forward_status_res(device, line->instance, line->callfwd_exten, line->callfwd_active ? 1 : 0);
 }
 
 static void transmit_line_lamp_state(struct sccp_device *device, struct sccp_line *line, enum sccp_lamp_state indication)
 {
 	transmit_lamp_state(device, STIMULUS_LINE, line->instance, indication);
+}
+
+/* lamp of a line in DND without call; amber blinking on a 69xx, like a ringing line */
+static enum sccp_lamp_state dnd_lamp_state = SCCP_LAMP_BLINK;
+
+/*
+ * The lamp of a line without call: off, or the DND lamp when the line is in DND.
+ */
+static void transmit_line_idle_lamp_state(struct sccp_device *device, struct sccp_line *line)
+{
+	transmit_line_lamp_state(device, line, line->dnd ? dnd_lamp_state : SCCP_LAMP_OFF);
 }
 
 static void transmit_subchan_callstate(struct sccp_device *device, struct sccp_subchannel *subchan, enum sccp_state state)
@@ -2063,40 +2080,83 @@ static void sccp_device_on_idle(struct sccp_device *device)
 	}
 }
 
+static void append_line_status(struct ast_str **text, const struct sccp_line *line)
+{
+	if (line->dnd) {
+		ast_str_append(text, 0, "\200\77");
+	}
+
+	ast_str_append(text, 0, "     ");
+
+	if (line->callfwd_active) {
+		ast_str_append(text, 0, "\200\5: %s", line->callfwd_exten);
+	}
+}
+
+/*
+ * Single line devices show the DND / call forward status as before; multi-line devices
+ * show it for each line that has one, prefixed with the line name.
+ */
 static void update_displaymessage(struct sccp_device *device)
 {
-	char text[AST_MAX_EXTENSION + 21];
+	struct ast_str *text;
+	struct sccp_line *line;
+	size_t i;
+	int has_status = 0;
 
-	if (!device->dnd && device->callfwd != SCCP_CFWD_ACTIVE) {
+	for (i = 0; i < device->lines.count; i++) {
+		line = device->lines.arr[i];
+		if (line->dnd || line->callfwd_active) {
+			has_status = 1;
+		}
+	}
+
+	if (!has_status) {
 		transmit_clear_message(device);
 		return;
 	}
 
-	text[0] = '\0';
-
-	if (device->dnd) {
-		strcat(text, "\200\77");
+	text = ast_str_create(64);
+	if (!text) {
+		return;
 	}
 
-	strcat(text, "     ");
+	if (device->lines.count == 1) {
+		append_line_status(&text, device->lines.arr[0]);
+	} else {
+		for (i = 0; i < device->lines.count; i++) {
+			line = device->lines.arr[i];
+			if (!line->dnd && !line->callfwd_active) {
+				continue;
+			}
 
-	if (device->callfwd == SCCP_CFWD_ACTIVE) {
-		strcat(text, "\200\5: ");
-		strncat(text, device->callfwd_exten, AST_MAX_EXTENSION);
+			if (ast_str_strlen(text)) {
+				ast_str_append(&text, 0, " ");
+			}
+
+			ast_str_append(&text, 0, "%s:", line->name);
+			if (line->dnd) {
+				ast_str_append(&text, 0, "\200\77");
+			}
+			if (line->callfwd_active) {
+				ast_str_append(&text, 0, "\200\5 %s", line->callfwd_exten);
+			}
+		}
 	}
 
-	transmit_display_message(device, text);
+	transmit_display_message(device, ast_str_buffer(text));
+	ast_free(text);
 }
 
-static void set_callforward(struct sccp_device *device, const char *exten)
+static void set_callforward(struct sccp_device *device, struct sccp_line *line, const char *exten)
 {
-	struct sccp_line *line = sccp_lines_get_default(&device->lines);
-
-	device->callfwd = SCCP_CFWD_ACTIVE;
-	ast_copy_string(device->callfwd_exten, exten, sizeof(device->callfwd_exten));
+	line->callfwd_active = 1;
+	ast_copy_string(line->callfwd_exten, exten, sizeof(line->callfwd_exten));
+	device->callfwd = SCCP_CFWD_INACTIVE;
+	device->callfwd_line = NULL;
 
 	remove_fwdtimeout_task(device);
-	ast_db_put("sccp/cfwdall", device->name, device->callfwd_exten);
+	ast_db_put("sccp/cfwdall", line->name, line->callfwd_exten);
 
 	transmit_callstate(device, SCCP_ONHOOK, line->instance, device->callfwd_id);
 	transmit_line_forward_status_res(device, line);
@@ -2106,18 +2166,21 @@ static void set_callforward(struct sccp_device *device, const char *exten)
 
 static void set_callforward_from_device_exten(struct sccp_device *device)
 {
-	set_callforward(device, device->exten);
+	if (!device->callfwd_line) {
+		ast_debug(1, "ignoring call forward input: no call forward input in progress\n");
+		return;
+	}
+
+	set_callforward(device, device->callfwd_line, device->exten);
 	device->exten[0] = '\0';
 }
 
-static void clear_callforward(struct sccp_device *device)
+static void clear_callforward(struct sccp_device *device, struct sccp_line *line)
 {
-	struct sccp_line *line = sccp_lines_get_default(&device->lines);
+	line->callfwd_active = 0;
+	line->callfwd_exten[0] = '\0';
 
-	device->callfwd = SCCP_CFWD_INACTIVE;
-	device->callfwd_exten[0] = '\0';
-
-	ast_db_del("sccp/cfwdall", device->name);
+	ast_db_del("sccp/cfwdall", line->name);
 
 	transmit_line_forward_status_res(device, line);
 	update_displaymessage(device);
@@ -2125,9 +2188,10 @@ static void clear_callforward(struct sccp_device *device)
 
 static void cancel_callforward_input(struct sccp_device *device)
 {
-	struct sccp_line *line = sccp_lines_get_default(&device->lines);
+	struct sccp_line *line = device->callfwd_line;
 
 	device->callfwd = SCCP_CFWD_INACTIVE;
+	device->callfwd_line = NULL;
 	device->exten[0] = '\0';
 
 	remove_fwdtimeout_task(device);
@@ -2333,7 +2397,7 @@ static void do_clear_subchannel(struct sccp_device *device, struct sccp_subchann
 	/* the ref is decremented at the end of the function */
 	AST_LIST_REMOVE(&line->subchans, subchan, list);
 	if (AST_LIST_EMPTY(&line->subchans)) {
-		transmit_line_lamp_state(device, line, SCCP_LAMP_OFF);
+		transmit_line_idle_lamp_state(device, line);
 		sccp_line_update_devstate(line, AST_DEVICE_NOT_INUSE);
 	}
 
@@ -2536,7 +2600,7 @@ static void do_speeddial_action(struct sccp_device *device, struct sccp_speeddia
 	struct sccp_subchannel *subchan;
 
 	if (device->callfwd == SCCP_CFWD_INPUTEXTEN) {
-		set_callforward(device, sd->cfg->extension);
+		set_callforward(device, device->callfwd_line, sd->cfg->extension);
 	} else {
 		/* XXX this 3 steps stuff should be simplified into one function */
 		subchan = do_newcall_options(device, sccp_device_get_current_line(device), OPT_SPEAKER_ON);
@@ -2696,6 +2760,9 @@ static void handle_msg_line_status_req(struct sccp_device *device, struct sccp_m
 
 	transmit_line_status_res(device, line);
 	transmit_line_forward_status_res(device, line);
+	if (AST_LIST_EMPTY(&line->subchans)) {
+		transmit_line_idle_lamp_state(device, line);
+	}
 }
 
 static void handle_msg_onhook(struct sccp_device *device, struct sccp_msg *msg)
@@ -2855,43 +2922,66 @@ static void handle_softkey_bkspc(struct sccp_device *device)
 	}
 }
 
-static void handle_softkey_cfwdall(struct sccp_device *device)
+static void handle_softkey_cfwdall(struct sccp_device *device, uint32_t line_instance)
 {
-	struct sccp_line *line = sccp_lines_get_default(&device->lines);
+	struct sccp_line *line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
 
-	switch (device->callfwd) {
-	case SCCP_CFWD_INACTIVE:
-		device->callfwd_id = device->serial_callid++;
-		device->callfwd = SCCP_CFWD_INPUTEXTEN;
-
-		transmit_callstate(device, SCCP_OFFHOOK, line->instance, device->callfwd_id);
-		transmit_selectsoftkeys(device, line->instance, device->callfwd_id, KEYDEF_CALLFWD);
-		transmit_speaker_mode(device, SCCP_SPEAKERON);
-		break;
-
-	case SCCP_CFWD_INPUTEXTEN:
+	if (device->callfwd == SCCP_CFWD_INPUTEXTEN) {
 		if (ast_strlen_zero(device->exten)) {
 			cancel_callforward_input(device);
 		} else {
 			set_callforward_from_device_exten(device);
 		}
+	} else if (line->callfwd_active) {
+		clear_callforward(device, line);
+	} else {
+		device->callfwd_id = device->serial_callid++;
+		device->callfwd = SCCP_CFWD_INPUTEXTEN;
+		device->callfwd_line = line;
 
-		break;
-
-	case SCCP_CFWD_ACTIVE:
-		clear_callforward(device);
-		break;
+		transmit_callstate(device, SCCP_OFFHOOK, line->instance, device->callfwd_id);
+		transmit_selectsoftkeys(device, line->instance, device->callfwd_id, KEYDEF_CALLFWD);
+		transmit_speaker_mode(device, SCCP_SPEAKERON);
 	}
 }
 
-static void handle_softkey_dnd(struct sccp_device *device)
+static void set_line_dnd(struct sccp_device *device, struct sccp_line *line, int dnd)
 {
-	if (device->dnd) {
-		device->dnd = 0;
-		ast_db_del("sccp/dnd", device->name);
+	line->dnd = dnd;
+	if (dnd) {
+		ast_db_put("sccp/dnd", line->name, "on");
 	} else {
-		device->dnd = 1;
-		ast_db_put("sccp/dnd", device->name, "on");
+		ast_db_del("sccp/dnd", line->name);
+	}
+
+	if (AST_LIST_EMPTY(&line->subchans)) {
+		transmit_line_idle_lamp_state(device, line);
+	}
+}
+
+/*
+ * The DND of the given line, or of all lines when the phone doesn't say which line
+ * (i.e. a 69xx sends line instance 0 from its idle screen).
+ */
+static void handle_softkey_dnd(struct sccp_device *device, uint32_t line_instance)
+{
+	struct sccp_line *line;
+	size_t i;
+	int any_dnd = 0;
+
+	if (line_instance) {
+		line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
+		set_line_dnd(device, line, !line->dnd);
+	} else {
+		for (i = 0; i < device->lines.count; i++) {
+			if (device->lines.arr[i]->dnd) {
+				any_dnd = 1;
+			}
+		}
+
+		for (i = 0; i < device->lines.count; i++) {
+			set_line_dnd(device, device->lines.arr[i], !any_dnd);
+		}
 	}
 
 	update_displaymessage(device);
@@ -3106,7 +3196,7 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 
 	switch (softkey_event) {
 	case SOFTKEY_DND:
-		handle_softkey_dnd(device);
+		handle_softkey_dnd(device, line_instance);
 		break;
 
 	case SOFTKEY_REDIAL:
@@ -3134,7 +3224,7 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 		break;
 
 	case SOFTKEY_CFWDALL:
-		handle_softkey_cfwdall(device);
+		handle_softkey_cfwdall(device, line_instance);
 		break;
 
 	case SOFTKEY_BKSPC:
@@ -3602,30 +3692,38 @@ static void init_voicemail_lamp_state(struct sccp_device *device)
 
 static void init_dnd(struct sccp_device *device)
 {
+	struct sccp_line *line;
 	char dnd_status[4];
+	size_t i;
 
+	/* DND was set per device previously: it's now the one of the default line */
 	if (!ast_db_get("sccp/dnd", device->name, dnd_status, sizeof(dnd_status))) {
-		device->dnd = 1;
-	} else {
-		device->dnd = 0;
+		ast_db_put("sccp/dnd", sccp_lines_get_default(&device->lines)->name, "on");
+		ast_db_del("sccp/dnd", device->name);
+	}
+
+	for (i = 0; i < device->lines.count; i++) {
+		line = device->lines.arr[i];
+		line->dnd = !ast_db_get("sccp/dnd", line->name, dnd_status, sizeof(dnd_status));
 	}
 }
 
 static void init_callfwd(struct sccp_device *device)
 {
+	struct sccp_line *line;
 	char exten[AST_MAX_EXTENSION];
+	size_t i;
 
+	/* call forward was set per device previously: it's now the one of the default line */
 	if (!ast_db_get("sccp/cfwdall", device->name, exten, sizeof(exten))) {
-		set_callforward(device, exten);
-	} else {
-		struct sccp_line *line = sccp_lines_get_default(&device->lines);
+		ast_db_put("sccp/cfwdall", sccp_lines_get_default(&device->lines)->name, exten);
+		ast_db_del("sccp/cfwdall", device->name);
+	}
 
-		/* callforward was set on the default line previously, so also check
-		 * if the default line has an entry in the ast_db
-		 */
+	for (i = 0; i < device->lines.count; i++) {
+		line = device->lines.arr[i];
 		if (!ast_db_get("sccp/cfwdall", line->name, exten, sizeof(exten))) {
-			set_callforward(device, exten);
-			ast_db_del("sccp/cfwdall", line->name);
+			set_callforward(device, line, exten);
 		}
 	}
 }
@@ -3730,7 +3828,7 @@ static int channel_tech_requester_locked(struct sccp_device *device, struct sccp
 		return -1;
 	}
 
-	if (device->dnd && device->callfwd == SCCP_CFWD_INACTIVE) {
+	if (line->dnd && !line->callfwd_active) {
 		*cause = AST_CAUSE_BUSY;
 		return -1;
 	}
@@ -3749,9 +3847,9 @@ static int channel_tech_requester_locked(struct sccp_device *device, struct sccp
 		ast_set_flag(subchan, SUBCHANNEL_AUTOANSWER);
 	}
 
-	if (device->callfwd == SCCP_CFWD_ACTIVE) {
-		ast_debug(1, "setting call forward to %s\n", device->callfwd_exten);
-		ast_channel_call_forward_set(channel, device->callfwd_exten);
+	if (line->callfwd_active) {
+		ast_debug(1, "setting call forward to %s\n", line->callfwd_exten);
+		ast_channel_call_forward_set(channel, line->callfwd_exten);
 	}
 
 	return 0;
@@ -3853,7 +3951,7 @@ int sccp_channel_tech_call(struct ast_channel *channel, const char *dest, int ti
 		goto unlock;
 	}
 
-	if (device->callfwd == SCCP_CFWD_ACTIVE) {
+	if (line->callfwd_active) {
 		struct ast_party_redirecting redirecting;
 		struct ast_set_party_redirecting update_redirecting;
 
