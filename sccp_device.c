@@ -1951,17 +1951,6 @@ static void transmit_line_lamp_state(struct sccp_device *device, struct sccp_lin
 	transmit_lamp_state(device, STIMULUS_LINE, line->instance, indication);
 }
 
-/* lamp of a line in DND without call; amber blinking on a 69xx, like a ringing line */
-static enum sccp_lamp_state dnd_lamp_state = SCCP_LAMP_BLINK;
-
-/*
- * The lamp of a line without call: off, or the DND lamp when the line is in DND.
- */
-static void transmit_line_idle_lamp_state(struct sccp_device *device, struct sccp_line *line)
-{
-	transmit_line_lamp_state(device, line, line->dnd ? dnd_lamp_state : SCCP_LAMP_OFF);
-}
-
 static void transmit_subchan_callstate(struct sccp_device *device, struct sccp_subchannel *subchan, enum sccp_state state)
 {
 	transmit_callstate(device, state, subchan->line->instance, subchan->id);
@@ -2403,7 +2392,7 @@ static void do_clear_subchannel(struct sccp_device *device, struct sccp_subchann
 	/* the ref is decremented at the end of the function */
 	AST_LIST_REMOVE(&line->subchans, subchan, list);
 	if (AST_LIST_EMPTY(&line->subchans)) {
-		transmit_line_idle_lamp_state(device, line);
+		transmit_line_lamp_state(device, line, SCCP_LAMP_OFF);
 		sccp_line_update_devstate(line, AST_DEVICE_NOT_INUSE);
 	}
 
@@ -2766,9 +2755,6 @@ static void handle_msg_line_status_req(struct sccp_device *device, struct sccp_m
 
 	transmit_line_status_res(device, line);
 	transmit_line_forward_status_res(device, line);
-	if (AST_LIST_EMPTY(&line->subchans)) {
-		transmit_line_idle_lamp_state(device, line);
-	}
 }
 
 static void handle_msg_onhook(struct sccp_device *device, struct sccp_msg *msg)
@@ -2970,17 +2956,13 @@ static void handle_softkey_cfwdall(struct sccp_device *device, uint32_t line_ins
 	}
 }
 
-static void set_line_dnd(struct sccp_device *device, struct sccp_line *line, int dnd)
+static void set_line_dnd(struct sccp_line *line, int dnd)
 {
 	line->dnd = dnd;
 	if (dnd) {
 		ast_db_put("sccp/dnd", line->name, "on");
 	} else {
 		ast_db_del("sccp/dnd", line->name);
-	}
-
-	if (AST_LIST_EMPTY(&line->subchans)) {
-		transmit_line_idle_lamp_state(device, line);
 	}
 }
 
@@ -2996,7 +2978,7 @@ static void handle_softkey_dnd(struct sccp_device *device, uint32_t line_instanc
 
 	if (line_instance) {
 		line = sccp_lines_get_by_instance_or_default(&device->lines, line_instance);
-		set_line_dnd(device, line, !line->dnd);
+		set_line_dnd(line, !line->dnd);
 	} else {
 		for (i = 0; i < device->lines.count; i++) {
 			if (device->lines.arr[i]->dnd) {
@@ -3005,7 +2987,7 @@ static void handle_softkey_dnd(struct sccp_device *device, uint32_t line_instanc
 		}
 
 		for (i = 0; i < device->lines.count; i++) {
-			set_line_dnd(device, device->lines.arr[i], !any_dnd);
+			set_line_dnd(device->lines.arr[i], !any_dnd);
 		}
 	}
 
