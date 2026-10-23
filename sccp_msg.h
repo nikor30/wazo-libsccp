@@ -146,8 +146,8 @@ enum sccp_softkey_status {
 	KEYDEF_CALLFWD = 6,
 	KEYDEF_DIALINTRANSFER = 7,
 	KEYDEF_RINGOUT = 8,
-	// KEYDEF_AUTOANSWER = 9,
-	// KEYDEF_UNKNOWN = 10,
+	/* the softkey sets are sent in order: the next one must be 9 */
+	KEYDEF_CONNINCONF = 9,
 };
 
 enum sccp_reset_type {

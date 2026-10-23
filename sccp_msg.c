@@ -23,6 +23,7 @@ static const uint8_t softkey_default_connected[] = {
 	SOFTKEY_ENDCALL,
 	SOFTKEY_TRNSFER,
 	SOFTKEY_PARK,
+	SOFTKEY_CONFRN,
 };
 
 static const uint8_t softkey_default_onhold[] = {
@@ -57,6 +58,12 @@ static const uint8_t softkey_default_connintransfer[] = {
 	SOFTKEY_TRNSFER,
 };
 
+static const uint8_t softkey_default_conninconf[] = {
+	SOFTKEY_NONE,
+	SOFTKEY_ENDCALL,
+	SOFTKEY_CONFRN,
+};
+
 static const uint8_t softkey_default_callfwd[] = {
 	SOFTKEY_BKSPC,
 	SOFTKEY_CFWDALL,
@@ -78,6 +85,7 @@ static const struct softkey_definitions softkey_default_definitions[] = {
 	{KEYDEF_CONNINTRANSFER, softkey_default_connintransfer, ARRAY_LEN(softkey_default_connintransfer)},
 	{KEYDEF_DIALINTRANSFER, softkey_default_dialintransfer, ARRAY_LEN(softkey_default_dialintransfer)},
 	{KEYDEF_CALLFWD, softkey_default_callfwd, ARRAY_LEN(softkey_default_callfwd)},
+	{KEYDEF_CONNINCONF, softkey_default_conninconf, ARRAY_LEN(softkey_default_conninconf)},
 };
 
 static struct softkey_template_definition softkey_template_default[] = {
@@ -1450,6 +1458,8 @@ static const char *sccp_softkey_status_str(enum sccp_softkey_status v)
 		return "dialintransfer";
 	case KEYDEF_RINGOUT:
 		return "ringout";
+	case KEYDEF_CONNINCONF:
+		return "conninconf";
 	}
 
 	return "unknown";

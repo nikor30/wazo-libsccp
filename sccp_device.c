@@ -65,6 +65,7 @@ enum {
 	SUBCHANNEL_RESUMING = (1 << 1),
 	SUBCHANNEL_AUTOANSWER = (1 << 2),
 	SUBCHANNEL_TRANSFERRING = (1 << 3),
+	SUBCHANNEL_CONFERENCING = (1 << 4),
 };
 
 struct sccp_subchannel {
@@ -196,6 +197,16 @@ struct sccp_device {
 	char last_exten[AST_MAX_EXTENSION];
 };
 
+struct nolock_task_conference {
+	/* the held call, that becomes the conference */
+	struct ast_channel *channel;
+	/* the consultation call, whose other party joins the conference */
+	struct ast_channel *consult_channel;
+	/* to tell the user when the conference failed */
+	struct sccp_device *device;
+	uint32_t line_instance;
+};
+
 struct nolock_task_ast_bridge_transfer_attended {
 	struct ast_channel *to_transferee;
 	struct ast_channel *to_transfer_target;
@@ -243,6 +254,7 @@ struct nolock_task_start_channel {
 
 union nolock_task_data {
 	struct nolock_task_ast_bridge_transfer_attended transfer_attended;
+	struct nolock_task_conference conference;
 	struct nolock_task_ast_queue_control queue_control;
 	struct nolock_task_ast_queue_frame_dtmf queue_frame_dtmf;
 	struct nolock_task_ast_queue_hangup queue_hangup;
@@ -662,6 +674,71 @@ static void exec_ast_bridge_transfer_attended(union nolock_task_data *data)
 
 	ast_channel_unref(to_transferee);
 	ast_channel_unref(to_transfer_target);
+}
+
+static struct ast_bridge *channel_get_bridge(struct ast_channel *channel)
+{
+	struct ast_bridge *bridge;
+
+	ast_channel_lock(channel);
+	bridge = ast_channel_get_bridge(channel);
+	ast_channel_unlock(channel);
+
+	return bridge;
+}
+
+/*
+ * The other party of the consultation call joins the bridge of the held call: with 3
+ * channels, the basic bridge switches to a mixing (softmix) bridge by itself. The phone's
+ * consultation channel is kicked out of the merge and hangs up.
+ */
+static void exec_conference(union nolock_task_data *data)
+{
+	struct ast_channel *channel = data->conference.channel;
+	struct ast_channel *consult_channel = data->conference.consult_channel;
+	struct ast_bridge *bridge = channel_get_bridge(channel);
+	struct ast_bridge *consult_bridge = channel_get_bridge(consult_channel);
+	int failed = 0;
+
+	if (!bridge || !consult_bridge) {
+		ast_log(LOG_NOTICE, "conference failed: %s or %s is not bridged\n", ast_channel_name(channel), ast_channel_name(consult_channel));
+		failed = 1;
+	} else if (bridge == consult_bridge) {
+		ast_log(LOG_NOTICE, "conference failed: both calls are in the same bridge\n");
+		failed = 1;
+	} else if (ast_bridge_merge(bridge, consult_bridge, 0, &consult_channel, 1)) {
+		ast_log(LOG_WARNING, "conference failed: could not merge the bridges of %s and %s\n", ast_channel_name(channel), ast_channel_name(consult_channel));
+		failed = 1;
+	}
+
+	if (failed) {
+		transmit_failure_notify(data->conference.device, "Conference failed", data->conference.line_instance);
+	}
+
+	ao2_cleanup(bridge);
+	ao2_cleanup(consult_bridge);
+	ast_channel_unref(channel);
+	ast_channel_unref(consult_channel);
+}
+
+static int add_conference_task(struct sccp_device *device, struct sccp_subchannel *subchan, struct sccp_subchannel *consult_subchan)
+{
+	struct nolock_task task;
+
+	task.exec = exec_conference;
+	task.data.conference.channel = subchan->channel;
+	task.data.conference.consult_channel = consult_subchan->channel;
+	task.data.conference.device = device;
+	task.data.conference.line_instance = subchan->line->instance;
+
+	if (add_nolock_task(device, &task)) {
+		return -1;
+	}
+
+	ast_channel_ref(subchan->channel);
+	ast_channel_ref(consult_subchan->channel);
+
+	return 0;
 }
 
 static int add_ast_bridge_transfer_attended_task(struct sccp_device *device, struct ast_channel *to_transferee, struct ast_channel *to_transfer_target)
@@ -1980,13 +2057,22 @@ static void transmit_subchan_selectsoftkeys(struct sccp_device *device, struct s
 	transmit_selectsoftkeys(device, subchan->line->instance, subchan->id, softkey);
 }
 
+static int subchan_is_conferencing(struct sccp_subchannel *subchan)
+{
+	return ast_test_flag(subchan, SUBCHANNEL_CONFERENCING) ||
+		(subchan->related && ast_test_flag(subchan->related, SUBCHANNEL_CONFERENCING));
+}
+
 /*
- * A connected subchan that is part of a transfer keeps the transfer softkeys, else
- * the second transfer press can't complete it (69xx turn it into a resume).
+ * A connected subchan that is part of a transfer (or conference) keeps the transfer
+ * (conference) softkeys, else the second press can't complete it (69xx turn it into a
+ * resume).
  */
 static void transmit_subchan_connected_softkeys(struct sccp_device *device, struct sccp_subchannel *subchan)
 {
-	if (subchan->related) {
+	if (subchan->related && subchan_is_conferencing(subchan)) {
+		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNINCONF);
+	} else if (subchan->related) {
 		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNINTRANSFER);
 	} else {
 		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNECTED);
@@ -2245,11 +2331,16 @@ static void unsubscribe_mwi(struct sccp_device *device)
 /*
  * device must have an active_subchan
  */
-static int do_hold(struct sccp_device *device)
+enum hold_flags {
+	/* the other party isn't told it's on hold (no music on hold), i.e. it's leaving */
+	HOLD_PHONE_ONLY = (1 << 0),
+};
+
+static int do_hold_options(struct sccp_device *device, enum hold_flags flags)
 {
 	struct sccp_subchannel *subchan = device->active_subchan;
 
-	if (subchan->channel) {
+	if (subchan->channel && !(flags & HOLD_PHONE_ONLY)) {
 		if (add_ast_queue_hold_task(device, subchan->channel)) {
 			return -1;
 		}
@@ -2273,6 +2364,11 @@ static int do_hold(struct sccp_device *device)
 	device->active_subchan = NULL;
 
 	return 0;
+}
+
+static inline int do_hold(struct sccp_device *device)
+{
+	return do_hold_options(device, 0);
 }
 
 /*
@@ -2385,8 +2481,14 @@ static void do_clear_subchannel(struct sccp_device *device, struct sccp_subchann
 	subchan->channel = NULL;
 
 	if (subchan->related) {
-		subchan->related->related = NULL;
+		struct sccp_subchannel *related = subchan->related;
+
+		related->related = NULL;
 		subchan->related = NULL;
+
+		if (related == device->active_subchan && related->state == SCCP_CONNECTED) {
+			transmit_subchan_connected_softkeys(device, related);
+		}
 	}
 
 	/* the ref is decremented at the end of the function */
@@ -2554,6 +2656,8 @@ static int start_the_call(struct sccp_device *device, struct sccp_subchannel *su
 	subchan->state = SCCP_RINGOUT;
 	if (ast_test_flag(subchan, SUBCHANNEL_TRANSFERRING)) {
 		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNINTRANSFER);
+	} else if (ast_test_flag(subchan, SUBCHANNEL_CONFERENCING)) {
+		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_CONNINCONF);
 	} else {
 		transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_RINGOUT);
 	}
@@ -3179,6 +3283,85 @@ static void handle_softkey_transfer(struct sccp_device *device)
 }
 
 /*
+ * Like the transfer: the first press puts the call on hold and calls the third party,
+ * the second press joins the two calls into a conference, which continues on the held
+ * call.
+ */
+static void handle_softkey_conference(struct sccp_device *device)
+{
+	struct sccp_subchannel *subchan = device->active_subchan;
+	struct sccp_subchannel *conf_subchan;
+	struct sccp_subchannel *consult_subchan;
+
+	if (!subchan || !subchan->channel) {
+		ast_log(LOG_NOTICE, "handle softkey conference failed: no active call\n");
+		return;
+	}
+
+	/* first time we press conference */
+	if (!subchan->related) {
+		if (subchan->state != SCCP_CONNECTED) {
+			ast_log(LOG_NOTICE, "handle softkey conference failed: active call not connected\n");
+			return;
+		}
+
+		if (do_hold(device)) {
+			ast_log(LOG_NOTICE, "handle softkey conference failed: could not put active call on hold\n");
+			return;
+		}
+
+		transmit_speaker_mode(device, SCCP_SPEAKERON);
+
+		/* the third party is called from the same line */
+		consult_subchan = sccp_line_new_subchannel(subchan->line, SCCP_DIR_OUTGOING);
+		if (!consult_subchan) {
+			return;
+		}
+
+		ast_set_flag(consult_subchan, SUBCHANNEL_CONFERENCING);
+
+		subchan->related = consult_subchan;
+		consult_subchan->related = subchan;
+
+		device->active_subchan = consult_subchan;
+
+		transmit_subchan_callstate(device, consult_subchan, SCCP_OFFHOOK);
+		transmit_subchan_selectsoftkeys(device, consult_subchan, KEYDEF_DIALINTRANSFER);
+		transmit_subchan_tone(device, consult_subchan, SCCP_TONE_DIAL);
+		return;
+	}
+
+	/* second press, on either call: the held one becomes the conference */
+	if (ast_test_flag(subchan, SUBCHANNEL_CONFERENCING)) {
+		consult_subchan = subchan;
+		conf_subchan = subchan->related;
+	} else {
+		conf_subchan = subchan;
+		consult_subchan = subchan->related;
+	}
+
+	if (!conf_subchan->channel || !consult_subchan->channel
+		|| conf_subchan->state != SCCP_CONNECTED || consult_subchan->state != SCCP_CONNECTED) {
+		ast_log(LOG_NOTICE, "handle softkey conference failed: both calls must be connected\n");
+		return;
+	}
+
+	/* the consultation call leaves: stop its audio without music on hold for its party */
+	if (subchan == consult_subchan) {
+		if (do_hold_options(device, HOLD_PHONE_ONLY)) {
+			return;
+		}
+
+		do_resume(device, conf_subchan);
+	} else {
+		/* the consultation call was put on hold when switching back: its party joins */
+		add_ast_queue_unhold_task(device, consult_subchan->channel);
+	}
+
+	add_conference_task(device, conf_subchan, consult_subchan);
+}
+
+/*
  * Devices without softkeys (i.e. 6901) transfer calls with hook flashes: the first one
  * puts the call on hold and gets a dial tone, the second one completes the transfer.
  */
@@ -3228,6 +3411,10 @@ static void handle_msg_softkey_event(struct sccp_device *device, struct sccp_msg
 
 	case SOFTKEY_TRNSFER:
 		handle_softkey_transfer(device);
+		break;
+
+	case SOFTKEY_CONFRN:
+		handle_softkey_conference(device);
 		break;
 
 	case SOFTKEY_CFWDALL:

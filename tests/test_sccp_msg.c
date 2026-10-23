@@ -173,6 +173,37 @@ static void test_pri_notify(void)
 	CHECK(!strcmp(sccp_msg_id_str(DISPLAY_PRI_NOTIFY_MESSAGE), "display pri notify"));
 }
 
+static int softkey_set_has(const struct sccp_msg *msg, enum sccp_softkey_status set, uint8_t softkey)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_LEN(msg->data.softkeysets.softKeySetDefinition[set].softKeyTemplateIndex); i++) {
+		if (msg->data.softkeysets.softKeySetDefinition[set].softKeyTemplateIndex[i] == softkey) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+static void test_softkey_set_res(void)
+{
+	struct sccp_msg msg;
+
+	memset(&msg, 0, sizeof(msg));
+	sccp_msg_softkey_set_res(&msg);
+
+	CHECK(letohl(msg.id) == SOFTKEY_SET_RES_MESSAGE);
+	/* sets 0..9 are sent, the phone looks them up by index */
+	CHECK(letohl(msg.data.softkeysets.softKeySetCount) == KEYDEF_CONNINCONF + 1);
+	CHECK(softkey_set_has(&msg, KEYDEF_CONNECTED, SOFTKEY_CONFRN));
+	CHECK(softkey_set_has(&msg, KEYDEF_CONNECTED, SOFTKEY_TRNSFER));
+	CHECK(softkey_set_has(&msg, KEYDEF_CONNINCONF, SOFTKEY_CONFRN));
+	CHECK(softkey_set_has(&msg, KEYDEF_CONNINCONF, SOFTKEY_ENDCALL));
+	CHECK(!softkey_set_has(&msg, KEYDEF_CONNINCONF, SOFTKEY_TRNSFER));
+	CHECK(softkey_set_has(&msg, KEYDEF_CONNINTRANSFER, SOFTKEY_TRNSFER));
+}
+
 static void test_keep_alive_ack(void)
 {
 	struct sccp_msg msg;
@@ -288,6 +319,7 @@ int main(void)
 	test_clear_prompt_status();
 	test_ringer_mode();
 	test_pri_notify();
+	test_softkey_set_res();
 	test_keep_alive_ack();
 	test_msg_id_str();
 	test_timed_notify();
