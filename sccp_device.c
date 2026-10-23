@@ -2289,14 +2289,15 @@ static int do_hold(struct sccp_device *device)
 /*
  * device must have no active_subchan
  */
-static int do_resume(struct sccp_device *device, struct sccp_subchannel *subchan)
+static int do_resume_options(struct sccp_device *device, struct sccp_subchannel *subchan, enum option_flags options)
 {
 	/* put on connected */
 	transmit_subchan_callstate(device, subchan, SCCP_CONNECTED);
 	transmit_subchan_connected_softkeys(device, subchan);
 
-	/* open our speaker */
-	transmit_speaker_mode(device, SCCP_SPEAKERON);
+	if (options & OPT_SPEAKER_ON) {
+		transmit_speaker_mode(device, SCCP_SPEAKERON);
+	}
 
 	/* restart the audio stream, which has been stopped in handle_softkey_hold */
 	if (subchan->rtp) {
@@ -2307,6 +2308,11 @@ static int do_resume(struct sccp_device *device, struct sccp_subchannel *subchan
 	device->active_subchan = subchan;
 
 	return 0;
+}
+
+static inline int do_resume(struct sccp_device *device, struct sccp_subchannel *subchan)
+{
+	return do_resume_options(device, subchan, OPT_SPEAKER_ON);
 }
 
 static int do_hangup(struct sccp_device *device, struct sccp_subchannel *subchan);
@@ -2816,7 +2822,18 @@ static void handle_msg_offhook(struct sccp_device *device, struct sccp_msg *msg)
 				return;
 			}
 
-			do_answer(device, subchan);
+			/* lifting the handset with a held call selected resumes it */
+			if (subchan->state == SCCP_CONNECTED && subchan != device->active_subchan) {
+				if (device->active_subchan && do_hold(device)) {
+					ast_log(LOG_NOTICE, "handle msg offhook failed: could not put active subchan on hold\n");
+					return;
+				}
+
+				/* the handset is off hook: no speaker */
+				do_resume_options(device, subchan, 0);
+			} else {
+				do_answer(device, subchan);
+			}
 		}
 	} else {
 		subchan = sccp_lines_get_next_ringin_subchan(&device->lines);
