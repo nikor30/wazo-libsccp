@@ -3819,10 +3819,6 @@ int sccp_channel_tech_call(struct ast_channel *channel, const char *dest, int ti
 
 	subchan->state = SCCP_RINGIN;
 
-	if (!device->active_subchan && !ast_test_flag(subchan, SUBCHANNEL_AUTOANSWER)) {
-		transmit_subchan_ringer_mode(device, subchan, SCCP_RING_INSIDE);
-	}
-
 	format_party_name(channel, name, sizeof(name));
 	format_party_number(channel, &number);
 
@@ -3830,6 +3826,11 @@ int sccp_channel_tech_call(struct ast_channel *channel, const char *dest, int ti
 	transmit_subchan_selectsoftkeys(device, subchan, KEYDEF_RINGIN);
 	transmit_callinfo(device, name, number, "", line->cfg->cid_num, line->instance, subchan->id, subchan->direction);
 	transmit_line_lamp_state(device, line, SCCP_LAMP_BLINK);
+
+	/* after the call state: a 69xx ignores the ringer for a call it doesn't know yet */
+	if (!device->active_subchan && !ast_test_flag(subchan, SUBCHANNEL_AUTOANSWER)) {
+		transmit_subchan_ringer_mode(device, subchan, SCCP_RING_INSIDE);
+	}
 
 	if (ast_test_flag(subchan, SUBCHANNEL_AUTOANSWER)) {
 		do_answer_options(device, subchan, OPT_SPEAKER_ON);
