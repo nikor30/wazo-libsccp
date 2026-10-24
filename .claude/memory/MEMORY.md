@@ -1,0 +1,4 @@
+- [sccp-lab](sccp-lab.md) — CT 114 on pve1 (192.168.1.200) for chan_sccp; I may create/manage it myself
+- [bummfilm TecWiki](bummfilm-tecwiki.md) — central wiki tecwiki.bummfilm.de; document all bummfilm progress there via /root/bumm-wiki/wiki.py
+- [local-build](local-build.md) — compile + make check on claude-control with unpacked Wazo asterisk-dev headers
+- [bernd-rights](bernd-rights.md) — bummfilm owns Bernd das Brot; original images/voice/samples OK for phone designs
